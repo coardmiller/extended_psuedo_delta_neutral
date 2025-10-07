@@ -89,7 +89,7 @@ class HedgeBot:
         self.stoploss_triggered = False
 
         # State management
-        self.state_file = Path(__file__).parent / "state.json"
+        self.state_file = Path(__file__).parent / "state" / "state.json"
         self.saved_hedge_ratio: Optional[float] = None
         self.saved_btc_qty: Optional[float] = None
         self.saved_eth_qty: Optional[float] = None
@@ -155,6 +155,8 @@ class HedgeBot:
         }
 
         try:
+            # Ensure state directory exists
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.state_file, 'w') as f:
                 json.dump(state, f, indent=4)
             logger.info(f"State saved: {state}")
