@@ -1,4 +1,4 @@
-# Pacifica BTC-ETH Hedge Bot
+# 🤖 Pacifica BTC-ETH Hedge Bot
 
 This is a trading bot for the Pacifica DEX that implements a pseudo delta-neutral (market-neutral) long/short strategy on BTC-PERP and ETH-PERP. It aims to generate returns from the basis between the two assets while remaining hedged against overall market movements.
 
@@ -17,23 +17,23 @@ If you would like to support this work, please use one of the following referral
 - `6NBS6TT7Y1SV2P53`
 - `E5ZYTD2FVXJA123W`
 
-## Features
+## ✨ Features
 
-- **Pseudo Delta-Neutral Strategy**: Goes long on BTC and short on ETH to hedge against directional market risk. While it aims to minimize directional risk, it's important to note that this is not a perfect delta-neutral hedge.
-- **Data-Driven Hedge Ratio**: Automatically calculates the hedge ratio using one of several configurable methods:
+- **📈 Pseudo Delta-Neutral Strategy**: Goes long on BTC and short on ETH to hedge against directional market risk. While it aims to minimize directional risk, it's important to note that this is not a perfect delta-neutral hedge.
+- **📊 Data-Driven Hedge Ratio**: Automatically calculates the hedge ratio using one of several configurable methods:
     - **EWMA (Exponentially Weighted Moving Average)**: A reactive method that gives more weight to recent price data.
     - **OLS (Ordinary Least Squares)**: A statistical method that uses a rolling window of historical data.
     - **Volatility Ratio**: A simpler method that uses the ratio of the two assets' volatilities.
-- **State Management**: Saves the bot's state (open positions, hedge ratio, etc.) to a `state.json` file, allowing it to resume operations after a restart.
-- **Intelligent Reconciliation**: At startup, the bot checks if its saved state is consistent with the positions on the exchange and makes adjustments if necessary.
-- **Stop-Loss Protection**: Includes a configurable stop-loss to protect against excessive losses on either leg of the pair.
-- **Safe Shutdown**: Designed to leave positions open when interrupted (e.g., with Ctrl+C) to prevent unintended closing of positions.
+- **💾 State Management**: Saves the bot's state (open positions, hedge ratio, etc.) to a `state.json` file, allowing it to resume operations after a restart.
+- **🧠 Intelligent Reconciliation**: At startup, the bot checks if its saved state is consistent with the positions on the exchange and makes adjustments if necessary.
+- **🛡️ Stop-Loss Protection**: Includes a configurable stop-loss to protect against excessive losses on either leg of the pair.
+- **🔌 Safe Shutdown**: Designed to leave positions open when interrupted (e.g., with Ctrl+C) to prevent unintended closing of positions.
 
 ## Screenshot
 
 ![Bot in action](screen.png)
 
-## Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 
@@ -72,7 +72,7 @@ If you would like to support this work, please use one of the following referral
     - `loop_sleep_seconds`: The time in seconds the bot waits between checks in the main loop.
     - `status_interval_seconds`: The frequency in seconds of the status log output.
 
-## Usage
+## ▶️ Usage
 
 To run the bot, simply execute the `main.py` script:
 
@@ -82,7 +82,7 @@ python main.py
 
 The bot will start, cancel any existing open orders, and then either open a new pair of positions or reconcile existing ones. It will then run continuously, checking for stop-loss conditions and refreshing the positions at the configured interval.
 
-## Running with Docker
+## 🐳 Running with Docker
 
 Alternatively, you can run the bot in a Docker container using the provided `docker-compose.yml` file. This is a convenient way to run the bot in a controlled environment.
 
@@ -101,7 +101,7 @@ To view the bot's logs, you can use the following command:
 docker-compose logs -f
 ```
 
-## Testing
+## 🧪 Testing
 
 The project includes a suite of tests to verify the core logic. To run the tests, use the `run_tests.py` script:
 
