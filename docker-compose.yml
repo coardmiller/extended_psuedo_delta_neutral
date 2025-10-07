@@ -11,17 +11,7 @@ services:
     container_name: hedge-bot
     tty: true
     restart: unless-stopped
-    command: >
-      sh -c "touch /app/state.json /app/hedge_bot.log && python main.py"
     env_file:
       - .env
     volumes:
-      - ./main.py:/app/main.py:ro
-      - ./__init__.py:/app/__init__.py:ro
-      - ./pacifica_client.py:/app/pacifica_client.py:ro
-      - ./ewma_hedge_ratio.py:/app/ewma_hedge_ratio.py:ro
-      - ./hedge_ratio.py:/app/hedge_ratio.py:ro
-      - ./config.json:/app/config.json:ro
-      - ./pacifica_sdk:/app/pacifica_sdk:ro
-      - ./state.json:/app/state.json
-      - ./hedge_bot.log:/app/hedge_bot.log
+      - ./:/app/
