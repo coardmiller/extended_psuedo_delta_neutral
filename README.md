@@ -1,9 +1,3 @@
-# Pacifica BTC-ETH Hedge Bot
-
-This is a trading bot for the Pacifica DEX that implements a pseudo delta-neutral (market-neutral) long/short strategy on BTC-PERP and ETH-PERP. It aims to generate returns from the basis between the two assets while remaining hedged against overall market movements.
-
-The bot is data-driven, using historical price data to calculate a hedge ratio that determines the relative sizes of the long BTC and short ETH positions.
-
 If you would like to support this work, please use one of the following referral codes when registering on [Pacifica DEX](https://app.pacifica.fi/):
 
 - `BYVJRCM791XFCF5K`
@@ -17,6 +11,12 @@ If you would like to support this work, please use one of the following referral
 - `6NBS6TT7Y1SV2P53`
 - `E5ZYTD2FVXJA123W`
 
+# Pacifica BTC-ETH Hedge Bot
+
+This is a trading bot for the Pacifica DEX that implements a pseudo delta-neutral (market-neutral) long/short strategy on BTC-PERP and ETH-PERP. It aims to generate returns from the basis between the two assets while remaining hedged against overall market movements.
+
+The bot is data-driven, using historical price data to calculate a hedge ratio that determines the relative sizes of the long BTC and short ETH positions.
+
 ## Features
 
 - **Pseudo Delta-Neutral Strategy**: Goes long on BTC and short on ETH to hedge against directional market risk. While it aims to minimize directional risk, it's important to note that this is not a perfect delta-neutral hedge.
@@ -28,6 +28,10 @@ If you would like to support this work, please use one of the following referral
 - **Intelligent Reconciliation**: At startup, the bot checks if its saved state is consistent with the positions on the exchange and makes adjustments if necessary.
 - **Stop-Loss Protection**: Includes a configurable stop-loss to protect against excessive losses on either leg of the pair.
 - **Safe Shutdown**: Designed to leave positions open when interrupted (e.g., with Ctrl+C) to prevent unintended closing of positions.
+
+## Screenshot
+
+![Bot in action](screen.png)
 
 ## Getting Started
 
