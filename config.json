@@ -1,0 +1,11 @@
+{
+  "capital_pct": 95,
+  "leverage": 4,
+  "refresh_hours": 8,
+  "stoploss_pct": 18,
+  "slippage_bps": 50,
+  "hedge_ratio_method": "ewma",
+  "loop_sleep_seconds": 60,
+  "status_interval_seconds": 60,
+  "_comment": "hedge_ratio_method can be 'ewma', 'ols', or 'vol_ratio'. loop_sleep_seconds is the time between checks in the main loop. status_interval_seconds is the frequency of the status log output."
+}
