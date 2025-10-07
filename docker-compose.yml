@@ -9,8 +9,9 @@ services:
   hedge-bot:
     build: .
     container_name: hedge-bot
-    tty: true
     restart: unless-stopped
+    command: >
+      sh -c "touch /app/state.json /app/hedge_bot.log && python main.py"
     env_file:
       - .env
     volumes:
