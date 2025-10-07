@@ -291,7 +291,7 @@ class PacificaClient:
             # Find position for symbol
             for pos in positions:
                 if pos.get("symbol") == symbol:
-                    logger.info(f"Raw position data for {symbol}: {pos}")
+                    logger.debug(f"Raw position data for {symbol}: {pos}")
                     opened_at = self._parse_position_timestamp(pos)
                     qty = float(pos.get("amount", 0))
                     if pos.get("side") == "ask":
