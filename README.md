@@ -1,4 +1,4 @@
-If you would like to support this work, please use one of the following referral codes when registering on [Pacifica DEX](https://app.pacifica.fi/):
+If you would like to support this work, please use one of the following referral codes when registering on [Pacifica DEX](https://app.pacifica.fi/) (if one is already taken, try the other ones):
 
 - `BYVJRCM791XFCF5K`
 - `ENPVKJ1WAVYNV2Z0`
