@@ -26,7 +26,98 @@ init(autoreset=True)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pacifica_client import PacificaClient
-from ewma_hedge_ratio import calculate_hedge_ratio_auto
+import aiohttp
+import asyncio
+import pandas as pd
+import numpy as np
+import scipy as sp
+
+
+API_BASE_URL = "https://api.pacifica.fi/api/v1"
+MAX_KLINES_PER_REQUEST = 3000
+OVERLAP_KLINES = 10
+
+
+async def fetch_klines_batch(session, symbol, interval, start_time, end_time, batch_num):
+    """
+    Fetch a single batch of klines from Pacifica API (async).
+    """
+    url = f"{API_BASE_URL}/kline"
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'start_time': start_time,
+        'end_time': end_time
+    }
+
+    try:
+        async with session.get(url, params=params, timeout=30) as response:
+            response.raise_for_status()
+            data = await response.json()
+
+            if not data.get('success'):
+                error_msg = data.get('error', 'Unknown error')
+                raise Exception(f"API returned error: {error_msg}")
+
+            return (batch_num, data.get('data', []))
+
+    except Exception as e:
+        logger.error(f"  [Batch {batch_num}] ERROR: {e}")
+        return (batch_num, [])
+
+
+async def get_klines(symbol, interval, limit=365):
+    """
+    Fetch klines from Pacifica API.
+    """
+    interval_ms = {'1d': 24 * 60 * 60 * 1000}
+    if interval not in interval_ms:
+        raise ValueError(f"Invalid interval: {interval}")
+
+    interval_duration_ms = interval_ms[interval]
+    end_time = int(time.time() * 1000)
+    start_time = end_time - (limit * interval_duration_ms)
+
+    logger.info(f"Fetching {limit} klines for {symbol}...")
+
+    num_batches = (limit + MAX_KLINES_PER_REQUEST - 1) // MAX_KLINES_PER_REQUEST
+    batch_ranges = []
+    current_start = start_time
+
+    for batch_num in range(num_batches):
+        batch_end = min(current_start + (MAX_KLINES_PER_REQUEST * interval_duration_ms), end_time)
+        batch_ranges.append((batch_num + 1, current_start, batch_end))
+        current_start = batch_end - (OVERLAP_KLINES * interval_duration_ms)
+
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            fetch_klines_batch(session, symbol, interval, start, end, batch_num)
+            for batch_num, start, end in batch_ranges
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_klines = []
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+        _, klines = result
+        if klines:
+            all_klines.extend(klines)
+
+    if not all_klines:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_klines)
+    df = df.rename(columns={'t': 'timestamp', 'c': 'close'})
+    df['close'] = pd.to_numeric(df['close'])
+    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df = df.drop_duplicates(subset=['timestamp'], keep='first')
+    df = df.sort_values('timestamp').reset_index(drop=True)
+    
+    if len(df) > limit:
+        df = df.tail(limit).reset_index(drop=True)
+
+    return df[['datetime', 'close']]
 
 
 # Configure logging
@@ -79,8 +170,7 @@ class HedgeBot:
         # Cached hedge ratio
         self._cached_h: Optional[float] = None
         self._h_last_update: float = 0
-        self._hedge_ratio_calculator = calculate_hedge_ratio_auto
-        logger.info(f"{Fore.GREEN}EWMA hedge ratio calculator initialized")
+        logger.info(f"{Fore.GREEN}Hedge ratio calculator based on 365-day returns initialized")
 
         # State
         self.running = True
@@ -182,6 +272,39 @@ class HedgeBot:
         """Get config value with default."""
         return self.config.get(key, default)
 
+    async def _calculate_new_hedge_ratio(self) -> Optional[float]:
+        """Calculates hedge ratio based on 365-day returns."""
+        try:
+            logger.info("Fetching daily klines for BTC and ETH for the last 365 days...")
+            
+            btc_klines = await get_klines('BTC', '1d', limit=365)
+            eth_klines = await get_klines('ETH', '1d', limit=365)
+
+            if btc_klines.empty or eth_klines.empty:
+                logger.error("Could not fetch klines for one or both symbols.")
+                return None
+
+            prices = pd.merge(
+                btc_klines.rename(columns={'close': 'BTC'}),
+                eth_klines.rename(columns={'close': 'ETH'}),
+                on='datetime'
+            )
+            prices = prices.set_index('datetime')
+
+            returns = prices.pct_change().dropna()
+
+            hedge_ratio = (
+                sp.stats.pearsonr(returns['BTC'], returns['ETH'])[0]
+                * np.std(returns['BTC'])
+                / np.std(returns['ETH'])
+            )
+            
+            logger.info(f"Calculated Minimum-Variance Hedge Ratio: {hedge_ratio}")
+            return hedge_ratio
+        except Exception as e:
+            logger.error(f"Error calculating hedge ratio: {e}", exc_info=True)
+            return None
+
     def _get_hedge_ratio(self, force_refresh: bool = False) -> float:
         """
         Get hedge ratio with caching.
@@ -205,33 +328,26 @@ class HedgeBot:
         )
 
         if need_calc:
-            method = self.get_config("hedge_ratio_method", "ewma")
-            logger.info(f"{Fore.CYAN}Calculating hedge ratio using '{method}' method...")
+            logger.info(f"{Fore.CYAN}Calculating hedge ratio using 365-day returns method...")
 
             try:
-                # Try EWMA first (most reactive)
-                h, stats = calculate_hedge_ratio_auto(
-                    window_hours=24,
-                    method=method,
-                    fallback_h=0.85,
-                    verbose=False
-                )
+                # Run the async calculation
+                h = asyncio.run(self._calculate_new_hedge_ratio())
 
-                logger.info(f"{Fore.CYAN}Hedge ratio ({method}): h = {Style.BRIGHT}{h:.4f}")
-                if "raw_h" in stats:
-                    logger.info(f"{Fore.WHITE}  Raw h (unclamped): {stats['raw_h']:.4f}")
-                if "status" in stats:
-                    logger.info(f"{Fore.WHITE}  Status: {stats['status']}")
-                if "samples" in stats:
-                    logger.info(f"{Fore.WHITE}  Samples: {stats['samples']}")
+                if h is not None:
+                    logger.info(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 25} HEDGE RATIO {'=' * 25}")
+                    logger.info(f"{Fore.CYAN}Hedge ratio: h = {Style.BRIGHT}{h:.4f}")
 
-                # Calculate split
-                btc_pct = 100 / (1 + h)
-                eth_pct = 100 * h / (1 + h)
-                logger.info(f"{Fore.YELLOW}  Portfolio split: {btc_pct:.1f}% BTC / {eth_pct:.1f}% ETH")
+                    # Calculate split
+                    btc_pct = 100 / (1 + h)
+                    eth_pct = 100 * h / (1 + h)
+                    logger.info(f"{Fore.YELLOW}  Portfolio split: {btc_pct:.1f}% BTC / {eth_pct:.1f}% ETH")
+                    logger.info(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 64}")
 
-                self._cached_h = h
-                self._h_last_update = time.time()
+                    self._cached_h = h
+                    self._h_last_update = time.time()
+                else:
+                    raise Exception("Hedge ratio calculation returned None")
 
             except Exception as e:
                 logger.error(f"Hedge ratio calculation failed: {e}", exc_info=True)
@@ -240,7 +356,7 @@ class HedgeBot:
                 if self._cached_h is not None:
                     logger.info(f"{Fore.YELLOW}Using cached hedge ratio: {self._cached_h:.4f}")
                 else:
-                    self._cached_h = 0.85
+                    self._cached_h = 0.35
                     logger.info(f"{Fore.YELLOW}Using fallback hedge ratio: {self._cached_h:.4f}")
 
         return self._cached_h
@@ -590,6 +706,13 @@ class HedgeBot:
             logger.info(f"{Fore.MAGENTA}{'-' * 60}")
             logger.info(f"{Fore.YELLOW}Equity: ${equity:.2f} | Total PnL for current position: {pnl_color}${total_pnl:.2f}")
             
+            if self._cached_h is not None:
+                logger.info(f"{Fore.CYAN}Hedge Ratio: {self._cached_h:.4f}")
+                # Calculate and show split
+                btc_pct = 100 / (1 + self._cached_h)
+                eth_pct = 100 * self._cached_h / (1 + self._cached_h)
+                logger.info(f"{Fore.YELLOW}  Portfolio split: {btc_pct:.1f}% BTC / {eth_pct:.1f}% ETH")
+
             if self.reference_account_value is not None and self.reference_account_value > 0:
                 long_term_pnl = equity - self.reference_account_value
                 long_term_pnl_pct = (long_term_pnl / self.reference_account_value) * 100
@@ -616,6 +739,10 @@ class HedgeBot:
         logger.info(f"{Fore.BLUE}{'=' * 60}")
         logger.info(f"{Fore.BLUE}BTC-ETH HEDGE BOT STARTING")
         logger.info(f"{Fore.BLUE}{'=' * 60}")
+
+        # Get hedge ratio on startup before doing anything else
+        logger.info("Calculating initial hedge ratio...")
+        self._get_hedge_ratio(force_refresh=True)
 
         # Cancel all orders on startup
         logger.info("Cancelling all open orders...")
