@@ -20,10 +20,7 @@ If you would like to support this work, please use one of the following referral
 ## ✨ Features
 
 - **📈 Pseudo Delta-Neutral Strategy**: Goes long on BTC and short on ETH to hedge against directional market risk. While it aims to minimize directional risk, it's important to note that this is not a perfect delta-neutral hedge.
-- **📊 Data-Driven Hedge Ratio**: Automatically calculates the hedge ratio using one of several configurable methods:
-    - **EWMA (Exponentially Weighted Moving Average)**: A reactive method that gives more weight to recent price data.
-    - **OLS (Ordinary Least Squares)**: A statistical method that uses a rolling window of historical data.
-    - **Volatility Ratio**: A simpler method that uses the ratio of the two assets' volatilities.
+- **📊 Data-Driven Hedge Ratio**: Automatically calculates a minimum-variance hedge ratio based on the last 365 days of daily returns to determine position sizes.
 - **💾 State Management**: Saves the bot's state (open positions, hedge ratio, etc.) to a `state.json` file, allowing it to resume operations after a restart.
 - **🧠 Intelligent Reconciliation**: At startup, the bot checks if its saved state is consistent with the positions on the exchange and makes adjustments if necessary.
 - **🛡️ Stop-Loss Protection**: Includes a configurable stop-loss to protect against excessive losses on either leg of the pair.
@@ -68,7 +65,6 @@ If you would like to support this work, please use one of the following referral
     - `refresh_hours`: The number of hours between position refreshes.
     - `stoploss_pct`: The stop-loss percentage for each leg of the pair.
     - `slippage_bps`: The allowed slippage in basis points for market orders.
-    - `hedge_ratio_method`: The method to use for calculating the hedge ratio. Can be `"ewma"`, `"ols"`, or `"vol_ratio"`.
     - `loop_sleep_seconds`: The time in seconds the bot waits between checks in the main loop.
     - `status_interval_seconds`: The frequency in seconds of the status log output.
 
