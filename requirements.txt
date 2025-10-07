@@ -1,0 +1,29 @@
+# Test dependencies for hedge bot
+# Testing framework
+pytest
+pytest-cov  # Coverage reporting
+pytest-mock  # Enhanced mocking
+pytest-asyncio  # Async test support
+# Code quality
+flake8  # Linting
+black  # Code formatting
+mypy  # Type checking
+# Test utilities
+freezegun  # Time mocking
+responses  # HTTP mocking
+aiohttp
+python-dotenv
+websockets
+websocket-client
+solders
+base58
+colorama
+pandas
+numpy
+requests
+scipy
+arch
+pandas-ta
+brotli
+numba
+requests
