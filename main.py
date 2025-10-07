@@ -620,6 +620,9 @@ class HedgeBot:
                 logger.info("No existing positions or state. Opening initial pair.")
                 self.open_pair()
 
+        # Print initial status
+        self.print_status()
+
         # Main loop
         last_status_print = time.time()
         status_interval = self.get_config("status_interval_seconds", 60)
