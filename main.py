@@ -588,7 +588,7 @@ class HedgeBot:
             eth_pnl_color = Fore.GREEN if pos_eth['unrealized_pnl'] >= 0 else Fore.RED
 
             logger.info(f"{Fore.MAGENTA}{'-' * 60}")
-            logger.info(f"{Fore.YELLOW}Equity: ${equity:.2f} | Total PnL: {pnl_color}${total_pnl:.2f}")
+            logger.info(f"{Fore.YELLOW}Equity: ${equity:.2f} | Total PnL for current position: {pnl_color}${total_pnl:.2f}")
             
             if self.reference_account_value is not None and self.reference_account_value > 0:
                 long_term_pnl = equity - self.reference_account_value
