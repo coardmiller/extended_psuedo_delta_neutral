@@ -93,6 +93,7 @@ class HedgeBot:
         self.saved_hedge_ratio: Optional[float] = None
         self.saved_btc_qty: Optional[float] = None
         self.saved_eth_qty: Optional[float] = None
+        self.reference_account_value: Optional[float] = None
         self._load_state()
 
         # Restore hedge ratio from state if available
@@ -122,6 +123,18 @@ class HedgeBot:
             self.saved_eth_qty = state.get("eth_qty_target")
             self.stoploss_triggered = state.get("stoploss_triggered", False)
 
+            # Get reference equity for long-term PnL tracking
+            self.reference_account_value = state.get("reference_account_value")
+            if self.reference_account_value is None:
+                logger.info("Reference account value not found in state, setting it to current equity.")
+                self.reference_account_value = self.client.get_equity()
+                # Re-save state immediately with the new reference value
+                self._save_state(
+                    self.saved_btc_qty, 
+                    self.saved_eth_qty, 
+                    self.saved_hedge_ratio
+                )
+
             logger.info(f"{Fore.GREEN}State loaded: {state}")
 
         except Exception as e:
@@ -138,6 +151,7 @@ class HedgeBot:
             "btc_qty_target": btc_qty,
             "eth_qty_target": eth_qty,
             "stoploss_triggered": self.stoploss_triggered,
+            "reference_account_value": self.reference_account_value,
         }
 
         try:
@@ -465,6 +479,8 @@ class HedgeBot:
 
             logger.info("Pair positions opened")
             self.last_deploy_at = datetime.now()
+            if self.reference_account_value is None:
+                self.reference_account_value = self.client.get_equity()
             refresh_hours = self.get_config("refresh_hours", 8)
             self.next_refresh = self.last_deploy_at + timedelta(hours=refresh_hours)
             self._save_state(q_btc, q_eth, self._get_hedge_ratio())
@@ -571,6 +587,13 @@ class HedgeBot:
 
             logger.info(f"{Fore.MAGENTA}{'-' * 60}")
             logger.info(f"{Fore.YELLOW}Equity: ${equity:.2f} | Total PnL: {pnl_color}${total_pnl:.2f}")
+            
+            if self.reference_account_value is not None and self.reference_account_value > 0:
+                long_term_pnl = equity - self.reference_account_value
+                long_term_pnl_pct = (long_term_pnl / self.reference_account_value) * 100
+                long_term_pnl_color = Fore.GREEN if long_term_pnl >= 0 else Fore.RED
+                logger.info(f"Long-term PnL: {long_term_pnl_color}${long_term_pnl:.2f} ({long_term_pnl_pct:+.2f}%)" f"{Style.RESET_ALL} | Reference Equity: ${self.reference_account_value:.2f}")
+
             logger.info(f"BTC: {pos_btc['qty']:.4f} @ ${pos_btc['entry_price']:.2f} | PnL: {btc_pnl_color}${pos_btc['unrealized_pnl']:.2f}")
             logger.info(f"ETH: {pos_eth['qty']:.4f} @ ${pos_eth['entry_price']:.2f} | PnL: {eth_pnl_color}${pos_eth['unrealized_pnl']:.2f}")
 
