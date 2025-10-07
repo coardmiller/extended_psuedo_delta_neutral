@@ -1,0 +1,9 @@
+025-10-06 23:42:33,210 [INFO] Loaded config: {'capital_pct': 95, 'leverage': 4, 'refresh_hours': 8, 'stoploss_pct': 5, 'slippage_bps': 10}
+2025-10-06 23:42:33,596 [INFO] Pacifica client initialized
+2025-10-06 23:42:33,596 [INFO] EWMA hedge ratio calculator initialized
+2025-10-06 23:42:33,597 [INFO] ============================================================
+2025-10-06 23:42:33,597 [INFO] BTC-ETH HEDGE BOT STARTING
+2025-10-06 23:42:33,597 [INFO] ============================================================
+2025-10-06 23:42:33,597 [INFO] Cancelling all open orders...
+2025-10-06 23:42:34,936 [INFO] Initial refresh scheduled for: 2025-10-07 07:42:34.936705
+2025-10-06 23:42:35,640 [INFO] Existing positions found: BTC=0.1000, ETH=0.0000. Waiting for next refresh cycle.
