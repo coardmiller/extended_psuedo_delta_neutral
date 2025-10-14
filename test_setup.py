@@ -11,8 +11,6 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 
-from extended_endpoints import iter_candidate_urls
-
 
 def test_config():
     """Test config.json exists and is valid."""
@@ -155,57 +153,11 @@ def test_connection():
     try:
         import requests
 
-        candidate_urls = list(
-            iter_candidate_urls(
-                [
-                    "public/v1/markets",
-                    "public/markets",
-                    "v1/public/markets",
-                    "v1/markets",
-                    "api/public/v1/markets",
-                    "api/public/markets",
-                    "api/v1/public/markets",
-                    "api/v1/markets",
-                    "exchange/public/v1/markets",
-                    "exchange/public/markets",
-                    "exchange/v1/public/markets",
-                    "exchange/v1/markets",
-                    "api/exchange/public/v1/markets",
-                    "api/exchange/public/markets",
-                    "api/exchange/v1/markets",
-                    "exchange/api/public/v1/markets",
-                    "exchange/api/public/markets",
-                    "exchange/api/v1/markets",
-                    "api/markets",
-                    "exchange/markets",
-                    "api/exchange/markets",
-                    "exchange/api/markets",
-                    "markets",
-                ]
-            )
-        )
-        if not candidate_urls:
-            print("   ❌ No Extended API endpoints configured")
-            return False
+        rest_url = "https://api.extended.exchange/api"
+        response = requests.get(f"{rest_url}/public/v1/markets", timeout=10)
+        response.raise_for_status()
 
-        payload = None
-        errors = []
-        for url in candidate_urls:
-            try:
-                response = requests.get(url, timeout=10)
-                if response.status_code == 404:
-                    errors.append(f"{url} -> 404")
-                    continue
-                response.raise_for_status()
-                payload = response.json()
-                break
-            except Exception as exc:
-                errors.append(f"{url} -> {exc}")
-                continue
-
-        if payload is None:
-            print(f"   ❌ Connection failed: {'; '.join(errors)}")
-            return False
+        payload = response.json()
         markets = payload.get("data") or payload.get("result") or payload
 
         btc_found = False

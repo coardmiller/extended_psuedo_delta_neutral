@@ -26,89 +26,66 @@ init(autoreset=True)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from extended_client import ExtendedClient
-import requests
+import aiohttp
+import asyncio
+import pandas as pd
+import numpy as np
+import scipy as sp
 
 from extended_endpoints import iter_candidate_urls
 
-
-KLINE_PATH_OPTIONS = (
-    "public/v1/klines",
-    "public/v1/kline",
-    "public/klines",
-    "public/kline",
-    "v1/public/klines",
-    "v1/public/kline",
-    "v1/klines",
-    "v1/kline",
-    "api/public/v1/klines",
-    "api/public/v1/kline",
-    "api/public/klines",
-    "api/public/kline",
-    "api/v1/public/klines",
-    "api/v1/public/kline",
-    "api/v1/klines",
-    "api/v1/kline",
-    "exchange/public/v1/klines",
-    "exchange/public/v1/kline",
-    "exchange/public/klines",
-    "exchange/public/kline",
-    "exchange/v1/public/klines",
-    "exchange/v1/public/kline",
-    "exchange/v1/klines",
-    "exchange/v1/kline",
-    "api/exchange/public/v1/klines",
-    "api/exchange/public/v1/kline",
-    "api/exchange/public/klines",
-    "api/exchange/public/kline",
-    "api/exchange/v1/klines",
-    "api/exchange/v1/kline",
-    "exchange/api/public/v1/klines",
-    "exchange/api/public/v1/kline",
-    "exchange/api/public/klines",
-    "exchange/api/public/kline",
-    "exchange/api/v1/klines",
-    "exchange/api/v1/kline",
-    "api/klines",
-    "api/kline",
-    "exchange/klines",
-    "exchange/kline",
-    "api/exchange/klines",
-    "api/exchange/kline",
-    "exchange/api/klines",
-    "exchange/api/kline",
-    "klines",
-    "kline",
-)
-KLINE_ENDPOINTS = tuple(iter_candidate_urls(KLINE_PATH_OPTIONS))
+API_BASE_URL = "https://api.extended.exchange/api"
 MAX_KLINES_PER_REQUEST = 3000
 OVERLAP_KLINES = 10
 
 
-def calculate_hedge_ratio_auto(*args, **kwargs):
-    """Proxy to ``ewma_hedge_ratio.calculate_hedge_ratio_auto`` for patchability."""
+async def fetch_klines_batch(session, symbol, interval, start_time, end_time, batch_num):
+    """
+    Fetch a single batch of klines from Extended API (async).
+    """
+    url = f"{PUBLIC_API_BASE_URL}/klines"
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'start_time': start_time,
+        'end_time': end_time
+    }
 
-    from ewma_hedge_ratio import calculate_hedge_ratio_auto as _calc
+    last_error: Optional[Exception] = None
+    if not KLINE_ENDPOINTS:
+        logger.error("  [Batch %s] ERROR: No Extended API kline endpoints configured", batch_num)
+        return (batch_num, [])
 
-    return _calc(*args, **kwargs)
+            if isinstance(data, dict) and data.get('success') is False:
+                error_msg = data.get('error', 'Unknown error')
+                raise Exception(f"API returned error: {error_msg}")
 
+            klines = []
+            if isinstance(data, dict):
+                klines = data.get('data') or data.get('result') or data.get('klines') or []
+            elif isinstance(data, list):
+                klines = data
 
-def _extract_timestamp(entry: Any) -> Optional[int]:
-    """Extract millisecond timestamp from a kline entry."""
+            return (batch_num, klines)
 
-    if isinstance(entry, dict):
-        for key in ("t", "time", "timestamp", "openTime", "open_time"):
-            value = entry.get(key)
-            if value is not None:
-                try:
-                    return int(value)
-                except (TypeError, ValueError):
-                    continue
-    elif isinstance(entry, (list, tuple)) and entry:
-        try:
-            return int(entry[0])
-        except (TypeError, ValueError):  # pragma: no cover - defensive
-            return None
-    return None
+                if isinstance(data, dict) and data.get('success') is False:
+                    error_msg = data.get('error', 'Unknown error')
+                    raise Exception(f"API returned error: {error_msg}")
+
+                klines = []
+                if isinstance(data, dict):
+                    klines = data.get('data') or data.get('result') or data.get('klines') or []
+                elif isinstance(data, list):
+                    klines = data
+
+                return (batch_num, klines)
+
+        except Exception as e:  # pragma: no cover - defensive for network issues
+            last_error = e
+            continue
+
+    logger.error(f"  [Batch {batch_num}] ERROR: {last_error}")
+    return (batch_num, [])
 
 
 def get_klines(symbol, interval, limit=365):
