@@ -143,62 +143,6 @@ class ExtendedClient:
             raise last_exc
         raise RuntimeError("Extended API request failed without exception")
 
-    def _request_with_path_fallbacks(
-        self,
-        method: str,
-        primary_path: str,
-        *,
-        path_options: Optional[Tuple[str, ...]] = None,
-        params: Optional[Dict[str, Any]] = None,
-        json_body: Optional[Dict[str, Any]] = None,
-        private: bool = False,
-        timeout: int = 10,
-    ) -> Dict[str, Any]:
-        """Call :meth:`_request` trying alternative path fragments on 404/405."""
-
-        candidates: Tuple[str, ...]
-        if path_options:
-            seen = set()
-            ordered = []
-            for path in (primary_path, *path_options):
-                if not path:
-                    continue
-                normalized = path if path.startswith("/") else f"/{path}"
-                if normalized in seen:
-                    continue
-                seen.add(normalized)
-                ordered.append(normalized)
-            candidates = tuple(ordered)
-        else:
-            candidates = (primary_path,)
-
-        last_exc: Optional[Exception] = None
-        for idx, path in enumerate(candidates):
-            try:
-                result = self._request(
-                    method,
-                    path,
-                    params=params,
-                    json_body=json_body,
-                    private=private,
-                    timeout=timeout,
-                )
-                if idx and logger.isEnabledFor(logging.INFO):
-                    logger.info("Extended API path fallback succeeded with %s", path)
-                return result
-            except HTTPError as exc:
-                last_exc = exc
-                status = exc.response.status_code if exc.response is not None else None
-                if status not in {404, 405}:
-                    raise
-            except RequestException as exc:  # pragma: no cover - network failure path
-                last_exc = exc
-                continue
-
-        if last_exc:
-            raise last_exc
-        raise RuntimeError("Extended API request failed without exception")
-
     # ------------------------------------------------------------------
     # Market metadata
     # ------------------------------------------------------------------
