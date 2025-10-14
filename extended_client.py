@@ -60,7 +60,13 @@ class ExtendedClient:
     # ------------------------------------------------------------------
     # HTTP utilities
     # ------------------------------------------------------------------
-    def _sign(self, method: str, path: str, params: Optional[Dict[str, Any]], body: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    def _sign(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]],
+        body: Optional[Dict[str, Any]],
+    ) -> Tuple[str, str]:
         """Create authentication headers as defined by Extended API."""
 
         timestamp = str(int(time.time() * 1000))
@@ -188,17 +194,27 @@ class ExtendedClient:
             return symbol
         return f"{symbol}-PERP"
 
+    def _market_defaults(self) -> _MarketPrecision:
+        return _MarketPrecision(
+            tick_size=0.1,
+            lot_size=0.001,
+            min_notional=10.0,
+            max_leverage=20,
+            tick_size_dec=Decimal("0.1"),
+            lot_size_dec=Decimal("0.001"),
+        )
+
     def get_tick_size(self, symbol: str) -> float:
-        return self._market_info.get(symbol, _MarketPrecision(0.1, 0.001, 10.0, 20, Decimal("0.1"), Decimal("0.001"))).tick_size
+        return self._market_info.get(symbol, self._market_defaults()).tick_size
 
     def get_lot_size(self, symbol: str) -> float:
-        return self._market_info.get(symbol, _MarketPrecision(0.1, 0.001, 10.0, 20, Decimal("0.1"), Decimal("0.001"))).lot_size
+        return self._market_info.get(symbol, self._market_defaults()).lot_size
 
     def get_min_notional(self, symbol: str) -> float:
-        return self._market_info.get(symbol, _MarketPrecision(0.1, 0.001, 10.0, 20, Decimal("0.1"), Decimal("0.001"))).min_notional
+        return self._market_info.get(symbol, self._market_defaults()).min_notional
 
     def get_max_leverage(self, symbol: str) -> int:
-        return self._market_info.get(symbol, _MarketPrecision(0.1, 0.001, 10.0, 20, Decimal("0.1"), Decimal("0.001"))).max_leverage
+        return self._market_info.get(symbol, self._market_defaults()).max_leverage
 
     def round_price(self, price: float, symbol: str, side: str = "bid") -> float:
         market = self._market_info.get(symbol)
@@ -509,4 +525,3 @@ class ExtendedClient:
             if not self.allow_fallback:
                 raise RuntimeError("Failed to cancel all orders") from exc
 
-*** End of File
