@@ -11,8 +11,14 @@ import sys
 import time
 import numpy as np
 import pandas as pd
-from market_data import INTERVAL_SECONDS, fetch_historical_klines
+import requests
+from pathlib import Path
+from typing import Optional, Tuple, List, Dict
+from math import log, exp, isfinite
 
+
+API_BASE_URL = "https://api.extended.exchange/api"
+KLINE_ENDPOINT = f"{API_BASE_URL}/kline"
 _PRICE_CACHE: Dict[Tuple[str, str, int, str], Tuple[List[float], List[float], dict]] = {}
 
 # Thresholds used to detect suspiciously low variance/covariance
@@ -20,7 +26,20 @@ LOW_VARIANCE_THRESHOLD = 1e-8
 LOW_COVARIANCE_THRESHOLD = 1e-9
 MAX_WINDOW_HOURS = 168
 
-
+# Mapping of supported kline intervals to seconds
+INTERVAL_SECONDS = {
+    "1m": 60,
+    "3m": 3 * 60,
+    "5m": 5 * 60,
+    "15m": 15 * 60,
+    "30m": 30 * 60,
+    "1h": 60 * 60,
+    "2h": 2 * 60 * 60,
+    "4h": 4 * 60 * 60,
+    "8h": 8 * 60 * 60,
+    "12h": 12 * 60 * 60,
+    "1d": 24 * 60 * 60,
+}
 
 
 class EWMAHedgeCalculator:
@@ -321,27 +340,85 @@ def _fetch_klines_data(
     start_time_ms: int,
     end_time_ms: int
 ) -> pd.DataFrame:
-    """Load klines via the shared market data helper."""
+    """
+    Fetch kline data from Extended REST API for a single symbol.
+
+    Splits requests into batches if the requested range exceeds the API
+    per-request limit. Returns a DataFrame sorted by timestamp.
+    """
     if interval not in INTERVAL_SECONDS:
-        raise ValueError(
-            f"Unsupported interval '{interval}'. Supported: {list(INTERVAL_SECONDS.keys())}"
-        )
+        raise ValueError(f"Unsupported interval '{interval}'. Supported: {list(INTERVAL_SECONDS.keys())}")
 
-    df, source, debug = fetch_historical_klines(
-        symbol,
-        interval,
-        start_time_ms,
-        end_time_ms,
-    )
+    interval_ms = INTERVAL_SECONDS[interval] * 1000
+    max_klines = 3000
+    klines: List[dict] = []
+    current_start = start_time_ms
+    attempts = 0
 
-    if df.empty:
-        raise ValueError(
-            f"No kline data returned for {symbol} between {start_time_ms} and {end_time_ms}: {debug}"
-        )
+    while current_start < end_time_ms and attempts < 20:
+        current_end = min(current_start + max_klines * interval_ms, end_time_ms)
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "start_time": current_start,
+            "end_time": current_end,
+            "limit": max_klines,
+        }
 
-    df = df[["timestamp", "price"]].copy()
-    df.attrs["source"] = source
-    df.attrs["debug"] = debug
+        try:
+            response = requests.get(KLINE_ENDPOINT, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to fetch klines for {symbol}: {exc}") from exc
+
+        if isinstance(data, dict) and data.get("success") is False:
+            raise RuntimeError(
+                f"API error while fetching klines for {symbol}: {data.get('error', 'unknown error')}"
+            )
+
+        if isinstance(data, dict):
+            batch = data.get("data") or data.get("result") or data.get("klines") or []
+        elif isinstance(data, list):
+            batch = data
+        else:
+            batch = []
+        if not batch:
+            break
+
+        klines.extend(batch)
+
+        # Advance start pointer. Add interval to avoid fetching the last candle again.
+        last_open_time = batch[-1].get("t")
+        if last_open_time is None:
+            break
+
+        current_start = int(last_open_time) + interval_ms
+        attempts += 1
+
+        if current_start >= end_time_ms or len(batch) < max_klines:
+            break
+
+    if not klines:
+        raise ValueError(f"No kline data returned for {symbol} between {start_time_ms} and {end_time_ms}")
+
+    df = pd.DataFrame(klines)
+
+    # Ensure required columns exist
+    if "t" not in df or "c" not in df:
+        raise ValueError(f"Kline response for {symbol} missing required fields.")
+
+    # Convert to numeric types and construct timestamp column
+    df["timestamp"] = pd.to_datetime(df["t"], unit="ms")
+    numeric_columns = ["o", "h", "l", "c"]
+    for col in numeric_columns:
+        if col in df:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=["timestamp", "c"])
+    df = df.sort_values("timestamp").drop_duplicates(subset="timestamp")
+    df = df[["timestamp", "c"]].rename(columns={"c": "price"})
+
     return df
 
 
@@ -391,13 +468,6 @@ def load_prices_from_api(
     prices_btc = merged["btc_price"].astype(float).tolist()
     prices_eth = merged["eth_price"].astype(float).tolist()
 
-    source_btc = btc_df.attrs.get("source", "extended")
-    source_eth = eth_df.attrs.get("source", "extended")
-    if source_btc == source_eth:
-        source = source_btc
-    else:
-        source = f"{source_btc}+{source_eth}"
-
     metadata = {
         "samples": len(prices_btc),
         "btc_mean": float(np.mean(prices_btc)),
@@ -406,13 +476,9 @@ def load_prices_from_api(
         "interval": interval,
         "symbol_btc": symbol_btc,
         "symbol_eth": symbol_eth,
-        "source": source,
+        "source": "api",
         "start_timestamp": merged["timestamp"].iloc[0],
         "end_timestamp": merged["timestamp"].iloc[-1],
-        "debug": {
-            symbol_btc: btc_df.attrs.get("debug", {}),
-            symbol_eth: eth_df.attrs.get("debug", {}),
-        },
     }
 
     _PRICE_CACHE[cache_key] = (prices_btc, prices_eth, metadata)

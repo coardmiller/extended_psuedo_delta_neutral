@@ -8,15 +8,6 @@ from typing import Iterable, Iterator, List, Optional
 _DEFAULT_REST_BASES: tuple[str, ...] = (
     "https://api.extended.exchange",
     "https://api.extended.exchange/api",
-    "https://api.extended.exchange/api/v1",
-    "https://api.extended.exchange/exchange",
-    "https://api.extended.exchange/exchange/api",
-    "https://api.extended.exchange/exchange/api/v1",
-    "https://api.extended.exchange/api/exchange",
-    "https://api.extended.exchange/api/exchange/v1",
-    "https://extended.exchange",
-    "https://extended.exchange/api",
-    "https://extended.exchange/api/v1",
 )
 
 

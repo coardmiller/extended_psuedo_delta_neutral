@@ -26,41 +26,161 @@ init(autoreset=True)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from extended_client import ExtendedClient
-from market_data import fetch_historical_klines, INTERVAL_SECONDS
+import aiohttp
+import asyncio
+import pandas as pd
+import numpy as np
+import scipy as sp
 
+from extended_endpoints import iter_candidate_urls
 
-def calculate_hedge_ratio_auto(*args, **kwargs):
-    """Proxy to ``ewma_hedge_ratio.calculate_hedge_ratio_auto`` for patchability."""
+API_BASE_URL = "https://api.extended.exchange/api"
+MAX_KLINES_PER_REQUEST = 3000
+OVERLAP_KLINES = 10
 
     from ewma_hedge_ratio import calculate_hedge_ratio_auto as _calc
 
-    return _calc(*args, **kwargs)
-def get_klines(symbol: str, interval: str, limit: int = 365):
-    """Fetch klines from Extended API with a Pacifica fallback."""
+async def fetch_klines_batch(session, symbol, interval, start_time, end_time, batch_num):
+    """
+    Fetch a single batch of klines from Extended API (async).
+    """
+    url = f"{PUBLIC_API_BASE_URL}/klines"
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'start_time': start_time,
+        'end_time': end_time
+    }
+
+    last_error: Optional[Exception] = None
+    if not KLINE_ENDPOINTS:
+        logger.error("  [Batch %s] ERROR: No Extended API kline endpoints configured", batch_num)
+        return (batch_num, [])
+
+            if isinstance(data, dict) and data.get('success') is False:
+                error_msg = data.get('error', 'Unknown error')
+                raise Exception(f"API returned error: {error_msg}")
+
+            klines = []
+            if isinstance(data, dict):
+                klines = data.get('data') or data.get('result') or data.get('klines') or []
+            elif isinstance(data, list):
+                klines = data
+
+            return (batch_num, klines)
+
+                if isinstance(data, dict) and data.get('success') is False:
+                    error_msg = data.get('error', 'Unknown error')
+                    raise Exception(f"API returned error: {error_msg}")
+
+                klines = []
+                if isinstance(data, dict):
+                    klines = data.get('data') or data.get('result') or data.get('klines') or []
+                elif isinstance(data, list):
+                    klines = data
+
+                return (batch_num, klines)
+
+        except Exception as e:  # pragma: no cover - defensive for network issues
+            last_error = e
+            continue
+
+    logger.error(f"  [Batch {batch_num}] ERROR: {last_error}")
+    return (batch_num, [])
+
+
+def get_klines(symbol, interval, limit=365):
+    """
+    Fetch klines from Extended API.
+    """
     import pandas as pd
 
-    if interval not in INTERVAL_SECONDS:
+    interval_ms = {'1d': 24 * 60 * 60 * 1000}
+    if interval not in interval_ms:
         raise ValueError(f"Invalid interval: {interval}")
 
     interval_duration_ms = INTERVAL_SECONDS[interval] * 1000
     end_time = int(time.time() * 1000)
     start_time = end_time - (limit * interval_duration_ms)
 
-    df, source, debug = fetch_historical_klines(
-        symbol,
-        interval,
-        start_time,
-        end_time,
-        limit=limit,
-    )
+    logger.info(f"Fetching {limit} klines for {symbol}...")
 
-    if df.empty:
-        logger.error(
-            "Failed to fetch %s %s klines from Extended or Pacifica: %s",
-            symbol,
-            interval,
-            debug,
-        )
+    num_batches = (limit + MAX_KLINES_PER_REQUEST - 1) // MAX_KLINES_PER_REQUEST
+    batch_ranges = []
+    current_start = start_time
+
+    for batch_num in range(num_batches):
+        batch_end = min(current_start + (MAX_KLINES_PER_REQUEST * interval_duration_ms), end_time)
+        batch_ranges.append((batch_num + 1, current_start, batch_end))
+        current_start = batch_end - (OVERLAP_KLINES * interval_duration_ms)
+
+    all_klines = []
+
+    for batch_num, start, end in batch_ranges:
+        params = {
+            'symbol': symbol,
+            'interval': interval,
+            'start_time': start,
+            'end_time': end,
+            'limit': MAX_KLINES_PER_REQUEST,
+        }
+
+        last_error: Optional[Exception] = None
+        klines: Optional[list] = None
+
+        for url in KLINE_ENDPOINTS:
+            try:
+                response = requests.get(url, params=params, timeout=30)
+            except requests.RequestException as exc:
+                last_error = exc
+                continue
+
+            if response.status_code == 404:
+                last_error = RuntimeError(f"404 from {url}")
+                continue
+
+            try:
+                response.raise_for_status()
+                data = response.json()
+            except Exception as exc:
+                last_error = exc
+                continue
+
+            if isinstance(data, dict) and data.get('success') is False:
+                last_error = RuntimeError(data.get('error', 'Unknown API error'))
+                continue
+
+            if isinstance(data, dict):
+                klines = (
+                    data.get('data')
+                    or data.get('result')
+                    or data.get('klines')
+                    or data.get('candles')
+                    or []
+                )
+            elif isinstance(data, list):
+                klines = data
+            else:
+                klines = []
+            break
+
+        if klines is None:
+            logger.error("  [Batch %s] ERROR: %s", batch_num, last_error)
+            continue
+
+        if not klines:
+            continue
+
+        all_klines.extend(klines)
+
+        last_open = _extract_timestamp(klines[-1])
+        if last_open is None:
+            continue
+
+        next_start = last_open + interval_duration_ms - (OVERLAP_KLINES * interval_duration_ms)
+        current_start = max(next_start, last_open + interval_duration_ms)
+
+    if not all_klines:
         return pd.DataFrame()
 
     df = df.rename(columns={"price": "close"})

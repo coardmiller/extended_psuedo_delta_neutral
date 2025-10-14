@@ -51,9 +51,6 @@ The bot is data-driven, using historical price data to calculate a hedge ratio t
     EXTENDED_API_SECRET=YOUR_API_SECRET
     ```
 
-- **Optional:** If your region requires a different API hostname you can set `EXTENDED_REST_BASE_URL` (or comma-separated `EXTENDED_REST_BASE_URLS`) in your `.env`. The bot will automatically try each base when making requests.
-- **Optional:** Provide Pacifica market data credentials if Extended does not expose historical klines in your environment. Set `PACIFICA_REST_BASE_URL` (or `PACIFICA_REST_BASE_URLS`) to override the default `https://api.pacifica.fi/api/v1` endpoint and populate `PACIFICA_API_KEY` if your account requires an API token. The bot will fetch hedge-ratio history from Pacifica only when Extended responds with empty/404 kline payloads.
-
 2.  **Edit the `config.json` file** to configure the bot's parameters:
     - `capital_pct`: The percentage of your account equity to use for the strategy.
     - `leverage`: The leverage to use for your positions.
