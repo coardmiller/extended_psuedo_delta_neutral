@@ -43,9 +43,9 @@ def sample_prices_eth():
 @pytest.fixture
 def mock_env_vars(monkeypatch):
     """Mock environment variables."""
-    monkeypatch.setenv("SOL_WALLET", "test_sol_wallet")
-    monkeypatch.setenv("API_PUBLIC", "test_api_public")
-    monkeypatch.setenv("API_PRIVATE", TEST_PRIVATE_KEY)
+    monkeypatch.setenv("EXTENDED_ACCOUNT_ID", "test_account")
+    monkeypatch.setenv("EXTENDED_API_KEY", "test_api_key")
+    monkeypatch.setenv("EXTENDED_API_SECRET", TEST_PRIVATE_KEY)
 
 
 @pytest.fixture(scope="session")

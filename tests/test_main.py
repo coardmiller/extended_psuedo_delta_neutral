@@ -38,14 +38,14 @@ class TestHedgeBotInitialization:
 
     @patch('main.load_dotenv')
     @patch('main.os.getenv')
-    @patch('main.PacificaClient')
+    @patch('main.ExtendedClient')
     def test_successful_initialization(self, mock_client_class, mock_getenv, mock_dotenv, config_file):
         """Test successful bot initialization."""
         # Mock environment variables
         mock_getenv.side_effect = lambda k: {
-            "SOL_WALLET": "test_wallet",
-            "API_PUBLIC": "test_public",
-            "API_PRIVATE": "test_private"
+            "EXTENDED_ACCOUNT_ID": "account",
+            "EXTENDED_API_KEY": "key",
+            "EXTENDED_API_SECRET": "secret"
         }.get(k)
 
         # Mock client
@@ -86,12 +86,12 @@ class TestConfigAccess:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
-                with patch('main.PacificaClient'):
+                with patch('main.ExtendedClient'):
                     temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
                     json.dump({
                         "capital_pct": 80,
@@ -132,12 +132,12 @@ class TestHedgeRatioCalculation:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
-                with patch('main.PacificaClient'):
+                with patch('main.ExtendedClient'):
                     temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
                     json.dump({
                         "capital_pct": 95,
@@ -245,9 +245,9 @@ class TestComputeTargets:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
                 mock_client = Mock()
@@ -259,7 +259,7 @@ class TestComputeTargets:
                 mock_client.round_quantity.side_effect = lambda q, s: round(q, 4)
                 mock_client.get_max_leverage.return_value = 20
 
-                with patch('main.PacificaClient', return_value=mock_client):
+                with patch('main.ExtendedClient', return_value=mock_client):
                     temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
                     json.dump({
                         "capital_pct": 95,
@@ -346,15 +346,15 @@ class TestStoploss:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
                 mock_client = Mock()
                 mock_client.get_lot_size.side_effect = lambda s: 0.001 if s == "BTC" else 0.01
 
-                with patch('main.PacificaClient', return_value=mock_client):
+                with patch('main.ExtendedClient', return_value=mock_client):
                     temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
                     json.dump({
                         "capital_pct": 95,
@@ -450,9 +450,9 @@ class TestMarketSimple:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
                 mock_client = Mock()
@@ -460,7 +460,7 @@ class TestMarketSimple:
                 mock_client.round_price.side_effect = lambda p, s: round(p, 1)
                 mock_client.place_market_order.return_value = "order_123"
 
-                with patch('main.PacificaClient', return_value=mock_client):
+                with patch('main.ExtendedClient', return_value=mock_client):
                     temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
                     json.dump({
                         "capital_pct": 95,
@@ -521,9 +521,9 @@ class TestPairOperations:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
                 mock_client = Mock()
@@ -537,7 +537,7 @@ class TestPairOperations:
                 mock_client.round_price.side_effect = lambda p, s: round(p, 2)
                 mock_client.place_market_order.return_value = "order_123"
 
-                with patch('main.PacificaClient', return_value=mock_client):
+                with patch('main.ExtendedClient', return_value=mock_client):
                     temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
                     json.dump({
                         "capital_pct": 95,
@@ -602,12 +602,12 @@ class TestSignalHandling:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
-                with patch('main.PacificaClient'):
+                with patch('main.ExtendedClient'):
                     temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
                     json.dump({
                         "capital_pct": 95,
@@ -656,15 +656,15 @@ class TestBotStartup:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
                 mock_client = Mock()
                 mock_client.get_lot_size.side_effect = lambda s: 0.001 if s == "BTC" else 0.01
 
-                with patch('main.PacificaClient', return_value=mock_client):
+                with patch('main.ExtendedClient', return_value=mock_client):
                     with patch('main.HedgeBot._load_state') as mock_load_state:
                         with patch('main.HedgeBot._save_state') as mock_save_state:
                             temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
@@ -813,15 +813,15 @@ class TestPositionMatching:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
                 mock_client = Mock()
                 mock_client.get_lot_size.side_effect = lambda s: 0.001 if s == "BTC" else 0.01
 
-                with patch('main.PacificaClient', return_value=mock_client):
+                with patch('main.ExtendedClient', return_value=mock_client):
                     temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
                     json.dump({
                         "capital_pct": 95,
@@ -864,9 +864,9 @@ class TestFrozenTargets:
         with patch('main.load_dotenv'):
             with patch('main.os.getenv') as mock_getenv:
                 mock_getenv.side_effect = lambda k: {
-                    "SOL_WALLET": "wallet",
-                    "API_PUBLIC": "public",
-                    "API_PRIVATE": "private"
+                    "EXTENDED_ACCOUNT_ID": "account",
+                    "EXTENDED_API_KEY": "key",
+                    "EXTENDED_API_SECRET": "secret"
                 }.get(k)
 
                 mock_client = Mock()
@@ -880,7 +880,7 @@ class TestFrozenTargets:
                 mock_client.round_price.side_effect = lambda p, s: round(p, 2)
                 mock_client.place_market_order.return_value = "order_123"
 
-                with patch('main.PacificaClient', return_value=mock_client):
+                with patch('main.ExtendedClient', return_value=mock_client):
                     temp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
                     json.dump({
                         "capital_pct": 95,

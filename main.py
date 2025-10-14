@@ -1,5 +1,5 @@
 """
-BTC-ETH Hedged Long/Short Bot for Pacifica DEX
+BTC-ETH Hedged Long/Short Bot for Extended Exchange
 
 Minimal configuration, data-driven hedge ratio, periodic refresh,
 per-leg stop-loss protection.
@@ -25,99 +25,56 @@ init(autoreset=True)
 # Add parent to path for SDK imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pacifica_client import PacificaClient
-import aiohttp
-import asyncio
-import pandas as pd
-import numpy as np
-import scipy as sp
+from extended_client import ExtendedClient
+from market_data import fetch_historical_klines, INTERVAL_SECONDS
 
 
-API_BASE_URL = "https://api.pacifica.fi/api/v1"
-MAX_KLINES_PER_REQUEST = 3000
-OVERLAP_KLINES = 10
+def calculate_hedge_ratio_auto(*args, **kwargs):
+    """Proxy to ``ewma_hedge_ratio.calculate_hedge_ratio_auto`` for patchability."""
 
+    from ewma_hedge_ratio import calculate_hedge_ratio_auto as _calc
 
-async def fetch_klines_batch(session, symbol, interval, start_time, end_time, batch_num):
-    """
-    Fetch a single batch of klines from Pacifica API (async).
-    """
-    url = f"{API_BASE_URL}/kline"
-    params = {
-        'symbol': symbol,
-        'interval': interval,
-        'start_time': start_time,
-        'end_time': end_time
-    }
+    return _calc(*args, **kwargs)
+def get_klines(symbol: str, interval: str, limit: int = 365):
+    """Fetch klines from Extended API with a Pacifica fallback."""
+    import pandas as pd
 
-    try:
-        async with session.get(url, params=params, timeout=30) as response:
-            response.raise_for_status()
-            data = await response.json()
-
-            if not data.get('success'):
-                error_msg = data.get('error', 'Unknown error')
-                raise Exception(f"API returned error: {error_msg}")
-
-            return (batch_num, data.get('data', []))
-
-    except Exception as e:
-        logger.error(f"  [Batch {batch_num}] ERROR: {e}")
-        return (batch_num, [])
-
-
-async def get_klines(symbol, interval, limit=365):
-    """
-    Fetch klines from Pacifica API.
-    """
-    interval_ms = {'1d': 24 * 60 * 60 * 1000}
-    if interval not in interval_ms:
+    if interval not in INTERVAL_SECONDS:
         raise ValueError(f"Invalid interval: {interval}")
 
-    interval_duration_ms = interval_ms[interval]
+    interval_duration_ms = INTERVAL_SECONDS[interval] * 1000
     end_time = int(time.time() * 1000)
     start_time = end_time - (limit * interval_duration_ms)
 
-    logger.info(f"Fetching {limit} klines for {symbol}...")
+    df, source, debug = fetch_historical_klines(
+        symbol,
+        interval,
+        start_time,
+        end_time,
+        limit=limit,
+    )
 
-    num_batches = (limit + MAX_KLINES_PER_REQUEST - 1) // MAX_KLINES_PER_REQUEST
-    batch_ranges = []
-    current_start = start_time
-
-    for batch_num in range(num_batches):
-        batch_end = min(current_start + (MAX_KLINES_PER_REQUEST * interval_duration_ms), end_time)
-        batch_ranges.append((batch_num + 1, current_start, batch_end))
-        current_start = batch_end - (OVERLAP_KLINES * interval_duration_ms)
-
-    async with aiohttp.ClientSession() as session:
-        tasks = [
-            fetch_klines_batch(session, symbol, interval, start, end, batch_num)
-            for batch_num, start, end in batch_ranges
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    all_klines = []
-    for result in results:
-        if isinstance(result, Exception):
-            continue
-        _, klines = result
-        if klines:
-            all_klines.extend(klines)
-
-    if not all_klines:
+    if df.empty:
+        logger.error(
+            "Failed to fetch %s %s klines from Extended or Pacifica: %s",
+            symbol,
+            interval,
+            debug,
+        )
         return pd.DataFrame()
 
-    df = pd.DataFrame(all_klines)
-    df = df.rename(columns={'t': 'timestamp', 'c': 'close'})
-    df['close'] = pd.to_numeric(df['close'])
-    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df = df.drop_duplicates(subset=['timestamp'], keep='first')
-    df = df.sort_values('timestamp').reset_index(drop=True)
-    
+    df = df.rename(columns={"price": "close"})
+    df["datetime"] = df["timestamp"]
+    df = df.drop_duplicates(subset=["datetime"], keep="last")
+    df = df.sort_values("datetime").reset_index(drop=True)
+
     if len(df) > limit:
         df = df.tail(limit).reset_index(drop=True)
 
-    return df[['datetime', 'close']]
+    logger.info(
+        "Fetched %s %s klines for %s via %s", len(df), interval, symbol, source
+    )
+    return df[["datetime", "close"]]
 
 
 # Configure logging
@@ -150,22 +107,22 @@ class HedgeBot:
         # Load environment
         load_dotenv(Path(__file__).parent / ".env")
 
-        sol_wallet = os.getenv("SOL_WALLET")
-        api_public = os.getenv("API_PUBLIC")
-        api_private = os.getenv("API_PRIVATE")
+        account_id = os.getenv("EXTENDED_ACCOUNT_ID")
+        api_key = os.getenv("EXTENDED_API_KEY")
+        api_secret = os.getenv("EXTENDED_API_SECRET")
 
-        if not all([sol_wallet, api_public, api_private]):
-            raise ValueError("Missing env vars: SOL_WALLET, API_PUBLIC, API_PRIVATE")
+        if not all([account_id, api_key, api_secret]):
+            raise ValueError("Missing env vars: EXTENDED_ACCOUNT_ID, EXTENDED_API_KEY, EXTENDED_API_SECRET")
 
         # Initialize client
-        self.client = PacificaClient(
-            sol_wallet,
-            api_public,
-            api_private,
+        self.client = ExtendedClient(
+            account_id,
+            api_key,
+            api_secret,
             slippage_bps=self.get_config("slippage_bps", 50),
             allow_fallback=False
         )
-        logger.info(f"{Fore.GREEN}Pacifica client initialized")
+        logger.info(f"{Fore.GREEN}Extended client initialized")
 
         # Cached hedge ratio
         self._cached_h: Optional[float] = None
@@ -189,8 +146,8 @@ class HedgeBot:
         # Restore hedge ratio from state if available
         if self.saved_hedge_ratio is not None:
             self._cached_h = self.saved_hedge_ratio
-            self._h_last_update = time.time()
-            logger.info(f"{Fore.GREEN}Hedge ratio restored from state: {self._cached_h:.4f}")
+            self._h_last_update = -1e12  # force early refresh regardless of mocked time
+            logger.info(f"{Fore.GREEN}Hedge ratio restored from state (stale): {self._cached_h:.4f}")
 
         # Register signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -272,13 +229,33 @@ class HedgeBot:
         """Get config value with default."""
         return self.config.get(key, default)
 
-    async def _calculate_new_hedge_ratio(self) -> Optional[float]:
+    def _calculate_new_hedge_ratio(self) -> Optional[float]:
         """Calculates hedge ratio based on 365-day returns."""
         try:
-            logger.info("Fetching daily klines for BTC and ETH for the last 365 days...")
-            
-            btc_klines = await get_klines('BTC', '1d', limit=365)
-            eth_klines = await get_klines('ETH', '1d', limit=365)
+            h, stats = calculate_hedge_ratio_auto(
+                window_hours=24 * 7,
+                method="ewma",
+                fallback_h=0.85,
+                use_api=True,
+                symbol_btc=self.BTC_SYMBOL,
+                symbol_eth=self.ETH_SYMBOL,
+                interval="1h",
+            )
+            if isinstance(h, (int, float)):
+                logger.info("Auto hedge ratio stats: %s", stats)
+                return float(h)
+        except Exception as primary_error:
+            logger.warning("Auto hedge ratio calculation failed: %s", primary_error)
+
+        try:
+            import pandas as pd
+            import numpy as np
+            import scipy as sp
+
+            logger.info("Falling back to manual hedge ratio using 365 daily klines...")
+
+            btc_klines = get_klines('BTC', '1d', limit=365)
+            eth_klines = get_klines('ETH', '1d', limit=365)
 
             if btc_klines.empty or eth_klines.empty:
                 logger.error("Could not fetch klines for one or both symbols.")
@@ -298,11 +275,11 @@ class HedgeBot:
                 * np.std(returns['BTC'])
                 / np.std(returns['ETH'])
             )
-            
-            logger.info(f"Calculated Minimum-Variance Hedge Ratio: {hedge_ratio}")
+
+            logger.info(f"Calculated fallback hedge ratio: {hedge_ratio}")
             return hedge_ratio
-        except Exception as e:
-            logger.error(f"Error calculating hedge ratio: {e}", exc_info=True)
+        except Exception as fallback_error:
+            logger.error("Manual hedge ratio calculation failed: %s", fallback_error, exc_info=True)
             return None
 
     def _get_hedge_ratio(self, force_refresh: bool = False) -> float:
@@ -331,8 +308,7 @@ class HedgeBot:
             logger.info(f"{Fore.CYAN}Calculating hedge ratio using 365-day returns method...")
 
             try:
-                # Run the async calculation
-                h = asyncio.run(self._calculate_new_hedge_ratio())
+                h = self._calculate_new_hedge_ratio()
 
                 if h is not None:
                     logger.info(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 25} HEDGE RATIO {'=' * 25}")
@@ -356,7 +332,7 @@ class HedgeBot:
                 if self._cached_h is not None:
                     logger.info(f"{Fore.YELLOW}Using cached hedge ratio: {self._cached_h:.4f}")
                 else:
-                    self._cached_h = 0.35
+                    self._cached_h = 0.85
                     logger.info(f"{Fore.YELLOW}Using fallback hedge ratio: {self._cached_h:.4f}")
 
         return self._cached_h
@@ -583,7 +559,12 @@ class HedgeBot:
 
             # Open BTC long
             logger.info(f"{Fore.GREEN}Opening BTC long: {q_btc:.4f} {self.BTC_SYMBOL}")
-            btc_order_id = self.client.place_market_order(self.BTC_SYMBOL, "buy", q_btc, reduce_only=False)
+            btc_order_id = self.client.place_market_order(
+                symbol=self.BTC_SYMBOL,
+                side="buy",
+                quantity=q_btc,
+                reduce_only=False,
+            )
             logger.info(f"BTC long order placed: {btc_order_id}")
 
             # Small delay between orders
@@ -591,7 +572,12 @@ class HedgeBot:
 
             # Open ETH short
             logger.info(f"{Fore.RED}Opening ETH short: {q_eth:.4f} {self.ETH_SYMBOL}")
-            eth_order_id = self.client.place_market_order(self.ETH_SYMBOL, "sell", q_eth, reduce_only=False)
+            eth_order_id = self.client.place_market_order(
+                symbol=self.ETH_SYMBOL,
+                side="sell",
+                quantity=q_eth,
+                reduce_only=False,
+            )
             logger.info(f"ETH short order placed: {eth_order_id}")
 
 
@@ -622,7 +608,12 @@ class HedgeBot:
             # Close BTC position (if long)
             if pos_btc['qty'] > 0:
                 logger.info(f"{Fore.RED}Closing BTC long: {pos_btc['qty']:.4f} {self.BTC_SYMBOL}")
-                btc_order_id = self.client.place_market_order(self.BTC_SYMBOL, "sell", pos_btc['qty'], reduce_only=True)
+                btc_order_id = self.client.place_market_order(
+                    symbol=self.BTC_SYMBOL,
+                    side="sell",
+                    quantity=pos_btc['qty'],
+                    reduce_only=True,
+                )
                 logger.info(f"BTC close order placed: {btc_order_id}")
 
 
@@ -632,7 +623,12 @@ class HedgeBot:
             # Close ETH position (if short)
             if pos_eth['qty'] < 0:
                 logger.info(f"{Fore.GREEN}Closing ETH short: {abs(pos_eth['qty']):.4f} {self.ETH_SYMBOL}")
-                eth_order_id = self.client.place_market_order(self.ETH_SYMBOL, "buy", abs(pos_eth['qty']), reduce_only=True)
+                eth_order_id = self.client.place_market_order(
+                    symbol=self.ETH_SYMBOL,
+                    side="buy",
+                    quantity=abs(pos_eth['qty']),
+                    reduce_only=True,
+                )
                 logger.info(f"ETH close order placed: {eth_order_id}")
 
             logger.info("Pair positions closed")

@@ -1,21 +1,8 @@
-# 🤖 Pacifica BTC-ETH Hedge Bot
+# 🤖 Extended BTC-ETH Hedge Bot
 
-This is a trading bot for the Pacifica DEX that implements a pseudo delta-neutral (market-neutral) long/short strategy on BTC-PERP and ETH-PERP. It aims to generate returns from the basis between the two assets while remaining hedged against overall market movements.
+This is a trading bot for the [Extended Exchange](https://extended.exchange/) that implements a pseudo delta-neutral (market-neutral) long/short strategy on BTC-PERP and ETH-PERP. It aims to generate returns from the basis between the two assets while remaining hedged against overall market movements.
 
 The bot is data-driven, using historical price data to calculate a hedge ratio that determines the relative sizes of the long BTC and short ETH positions.
-
-If you would like to support this work, please use one of the following referral codes when registering on [Pacifica DEX](https://app.pacifica.fi/) (if one is already taken, try the other ones):
-
-- `BYVJRCM791XFCF5K`
-- `ENPVKJ1WAVYNV2Z0`
-- `6HR2WM4C0JQ7D39Q`
-- `411J9J7CYNFZN3SX`
-- `2K7D40A9H53M2TJT`
-- `S1G3A2063Q7410BV`
-- `XH2V3VY9CQ7535CX`
-- `EK8NXX12VDKJJWNK`
-- `6NBS6TT7Y1SV2P53`
-- `E5ZYTD2FVXJA123W`
 
 ## ✨ Features
 
@@ -35,8 +22,8 @@ If you would like to support this work, please use one of the following referral
 ### Prerequisites
 
 - Python 3.8+
-- An account on the Pacifica DEX: https://app.pacifica.fi/
-- API keys for your Pacifica account
+- An account on the Extended Exchange: https://extended.exchange/
+- API key credentials for your Extended account (account id, API key, API secret)
 
 ### Installation
 
@@ -53,11 +40,19 @@ If you would like to support this work, please use one of the following referral
 
 ### Configuration
 
-1.  **Create a `.env` file** in the root of the project and add your API keys and wallet address. You can copy the `.env.example` file to get started:
+1.  **Create a `.env` file** in the root of the project and add your Extended account id, API key, and API secret. You can copy the `.env.example` file to get started:
     ```bash
     cp .env.example .env
     ```
-    Then, edit the `.env` file with your credentials.
+    Then, edit the `.env` file with your credentials:
+    ```env
+    EXTENDED_ACCOUNT_ID=YOUR_ACCOUNT_ID
+    EXTENDED_API_KEY=YOUR_API_KEY
+    EXTENDED_API_SECRET=YOUR_API_SECRET
+    ```
+
+- **Optional:** If your region requires a different API hostname you can set `EXTENDED_REST_BASE_URL` (or comma-separated `EXTENDED_REST_BASE_URLS`) in your `.env`. The bot will automatically try each base when making requests.
+- **Optional:** Provide Pacifica market data credentials if Extended does not expose historical klines in your environment. Set `PACIFICA_REST_BASE_URL` (or `PACIFICA_REST_BASE_URLS`) to override the default `https://api.pacifica.fi/api/v1` endpoint and populate `PACIFICA_API_KEY` if your account requires an API token. The bot will fetch hedge-ratio history from Pacifica only when Extended responds with empty/404 kline payloads.
 
 2.  **Edit the `config.json` file** to configure the bot's parameters:
     - `capital_pct`: The percentage of your account equity to use for the strategy.
@@ -104,3 +99,26 @@ The project includes a suite of tests to verify the core logic. To run the tests
 ```bash
 python run_tests.py
 ```
+
+## 🔄 Avoiding Merge Conflicts
+
+Keeping your branch up to date with `main` is the easiest way to prevent repeat conflict resolution. A lightweight workflow that
+works well with this repository is:
+
+1. Fetch the latest changes before you start working:
+   ```bash
+   git fetch origin
+   ```
+2. Rebase your feature branch on top of the most recent `main` history (this keeps the commit graph linear and avoids repeated
+   merge commits):
+   ```bash
+   git rebase origin/main
+   ```
+3. If you have already pushed your branch, force-push the rebased history once the rebase completes:
+   ```bash
+   git push --force-with-lease
+   ```
+
+Doing this at the start of each work session—and again right before opening a pull request—ensures you only need to reconcile
+each upstream change once. When collaborating with others, the `--force-with-lease` flag guarantees you do not overwrite their
+work while still keeping your branch conflict-free.
