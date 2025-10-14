@@ -1,981 +1,538 @@
-"""
-BTC-ETH Hedged Long/Short Bot for Extended Exchange
+"""Pseudo delta-neutral farming bot for Extended Exchange.
 
-Minimal configuration, data-driven hedge ratio, periodic refresh,
-per-leg stop-loss protection.
+This script implements a local BTC/ETH hedge strategy designed to farm
+volume on https://extended.exchange while attempting to remain close to
+delta-neutral exposure.  The bot focuses on being data-driven and
+resilient so it can be left running unattended:
 
-Usage:
-    python main.py
+* 📈 Goes long BTC and shorts ETH using a minimum-variance hedge ratio
+  computed from the last 365 days of daily returns.
+* 💾 Persists state (targets, hedge ratio, refresh schedule) in
+  ``state/state.json`` so it can recover after a restart.
+* 🧠 On start-up it reconciles the saved state with actual exchange
+  positions and rebalances if they diverge.
+* 🛡️ Enforces a configurable per-leg stop-loss.
+* 🔌 Handles Ctrl+C / SIGTERM cleanly and keeps positions open on exit to
+  avoid unintended liquidations.
+
+Environment variables expected (e.g. via ``.env``):
+    EXTENDED_ACCOUNT_ID, EXTENDED_API_KEY, EXTENDED_API_SECRET
 """
-import os
-import sys
+from __future__ import annotations
+
 import json
-import time
-import signal
 import logging
-from pathlib import Path
+import os
+import signal
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Dict, Any, Tuple, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+from colorama import Fore, init
 from dotenv import load_dotenv
-from colorama import init, Fore, Style
-
-# Initialize colorama
-init(autoreset=True)
-
-# Add parent to path for SDK imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from extended_client import ExtendedClient
-import aiohttp
-import asyncio
-import pandas as pd
-import numpy as np
-import scipy as sp
+from market_data import fetch_recent_klines
 
-from extended_endpoints import iter_candidate_urls
-
-API_BASE_URL = "https://api.extended.exchange/api"
-MAX_KLINES_PER_REQUEST = 3000
-OVERLAP_KLINES = 10
-
-    from ewma_hedge_ratio import calculate_hedge_ratio_auto as _calc
-
-async def fetch_klines_batch(session, symbol, interval, start_time, end_time, batch_num):
-    """
-    Fetch a single batch of klines from Extended API (async).
-    """
-    url = f"{PUBLIC_API_BASE_URL}/klines"
-    params = {
-        'symbol': symbol,
-        'interval': interval,
-        'start_time': start_time,
-        'end_time': end_time
-    }
-
-    last_error: Optional[Exception] = None
-    if not KLINE_ENDPOINTS:
-        logger.error("  [Batch %s] ERROR: No Extended API kline endpoints configured", batch_num)
-        return (batch_num, [])
-
-            if isinstance(data, dict) and data.get('success') is False:
-                error_msg = data.get('error', 'Unknown error')
-                raise Exception(f"API returned error: {error_msg}")
-
-            klines = []
-            if isinstance(data, dict):
-                klines = data.get('data') or data.get('result') or data.get('klines') or []
-            elif isinstance(data, list):
-                klines = data
-
-            return (batch_num, klines)
-
-                if isinstance(data, dict) and data.get('success') is False:
-                    error_msg = data.get('error', 'Unknown error')
-                    raise Exception(f"API returned error: {error_msg}")
-
-                klines = []
-                if isinstance(data, dict):
-                    klines = data.get('data') or data.get('result') or data.get('klines') or []
-                elif isinstance(data, list):
-                    klines = data
-
-                return (batch_num, klines)
-
-        except Exception as e:  # pragma: no cover - defensive for network issues
-            last_error = e
-            continue
-
-    logger.error(f"  [Batch {batch_num}] ERROR: {last_error}")
-    return (batch_num, [])
-
-
-def get_klines(symbol, interval, limit=365):
-    """
-    Fetch klines from Extended API.
-    """
-    import pandas as pd
-
-    interval_ms = {'1d': 24 * 60 * 60 * 1000}
-    if interval not in interval_ms:
-        raise ValueError(f"Invalid interval: {interval}")
-
-    interval_duration_ms = INTERVAL_SECONDS[interval] * 1000
-    end_time = int(time.time() * 1000)
-    start_time = end_time - (limit * interval_duration_ms)
-
-    logger.info(f"Fetching {limit} klines for {symbol}...")
-
-    num_batches = (limit + MAX_KLINES_PER_REQUEST - 1) // MAX_KLINES_PER_REQUEST
-    batch_ranges = []
-    current_start = start_time
-
-    for batch_num in range(num_batches):
-        batch_end = min(current_start + (MAX_KLINES_PER_REQUEST * interval_duration_ms), end_time)
-        batch_ranges.append((batch_num + 1, current_start, batch_end))
-        current_start = batch_end - (OVERLAP_KLINES * interval_duration_ms)
-
-    all_klines = []
-
-    for batch_num, start, end in batch_ranges:
-        params = {
-            'symbol': symbol,
-            'interval': interval,
-            'start_time': start,
-            'end_time': end,
-            'limit': MAX_KLINES_PER_REQUEST,
-        }
-
-        last_error: Optional[Exception] = None
-        klines: Optional[list] = None
-
-        for url in KLINE_ENDPOINTS:
-            try:
-                response = requests.get(url, params=params, timeout=30)
-            except requests.RequestException as exc:
-                last_error = exc
-                continue
-
-            if response.status_code == 404:
-                last_error = RuntimeError(f"404 from {url}")
-                continue
-
-            try:
-                response.raise_for_status()
-                data = response.json()
-            except Exception as exc:
-                last_error = exc
-                continue
-
-            if isinstance(data, dict) and data.get('success') is False:
-                last_error = RuntimeError(data.get('error', 'Unknown API error'))
-                continue
-
-            if isinstance(data, dict):
-                klines = (
-                    data.get('data')
-                    or data.get('result')
-                    or data.get('klines')
-                    or data.get('candles')
-                    or []
-                )
-            elif isinstance(data, list):
-                klines = data
-            else:
-                klines = []
-            break
-
-        if klines is None:
-            logger.error("  [Batch %s] ERROR: %s", batch_num, last_error)
-            continue
-
-        if not klines:
-            continue
-
-        all_klines.extend(klines)
-
-        last_open = _extract_timestamp(klines[-1])
-        if last_open is None:
-            continue
-
-        next_start = last_open + interval_duration_ms - (OVERLAP_KLINES * interval_duration_ms)
-        current_start = max(next_start, last_open + interval_duration_ms)
-
-    if not all_klines:
-        return pd.DataFrame()
-
-    df = df.rename(columns={"price": "close"})
-    df["datetime"] = df["timestamp"]
-    df = df.drop_duplicates(subset=["datetime"], keep="last")
-    df = df.sort_values("datetime").reset_index(drop=True)
-
-    if len(df) > limit:
-        df = df.tail(limit).reset_index(drop=True)
-
-    logger.info(
-        "Fetched %s %s klines for %s via %s", len(df), interval, symbol, source
-    )
-    return df[["datetime", "close"]]
-
-
-# Configure logging
+# -----------------------------------------------------------------------------
+# Logging configuration
+# -----------------------------------------------------------------------------
+LOG_FILE = Path(__file__).with_name("hedge_bot.log")
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler(Path(__file__).parent / "hedge_bot.log"),
-        logging.StreamHandler()
-    ]
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("hedge_bot")
+
+# Initialise colour output once
+init(autoreset=True)
+
+
+@dataclass
+class BotState:
+    """Serializable on-disk state for the bot."""
+
+    hedge_ratio: Optional[float] = None
+    btc_qty_target: float = 0.0
+    eth_qty_target: float = 0.0
+    last_deploy_at: Optional[str] = None
+    next_refresh: Optional[str] = None
+    stoploss_triggered: bool = False
+    reference_account_value: Optional[float] = None
+
+    @staticmethod
+    def from_file(path: Path) -> Optional["BotState"]:
+        if not path.exists():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            return BotState(**payload)
+        except Exception as exc:
+            logger.error("Failed to load state from %s: %s", path, exc)
+            return None
+
+    def to_file(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(asdict(self), handle, indent=2, sort_keys=True)
 
 
 class HedgeBot:
-    """BTC-ETH hedged long/short bot."""
+    """BTC/ETH pseudo delta-neutral strategy manager."""
 
-    # Symbols (fixed)
     BTC_SYMBOL = "BTC"
     ETH_SYMBOL = "ETH"
 
-    def __init__(self, config_path: Path):
-        """Initialize bot with config file."""
-        # Load config
-        with open(config_path, 'r') as f:
-            self.config = json.load(f)
+    def __init__(self, config_path: Path) -> None:
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file missing: {config_path}")
+        with config_path.open("r", encoding="utf-8") as handle:
+            self.config: Dict[str, Any] = json.load(handle)
+        logger.info("Loaded configuration: %s", self.config)
 
-        logger.info(f"{Fore.GREEN}Loaded config: {self.config}")
-
-        # Load environment
-        load_dotenv(Path(__file__).parent / ".env")
-
+        load_dotenv(Path(__file__).with_name(".env"))
         account_id = os.getenv("EXTENDED_ACCOUNT_ID")
         api_key = os.getenv("EXTENDED_API_KEY")
         api_secret = os.getenv("EXTENDED_API_SECRET")
-
         if not all([account_id, api_key, api_secret]):
-            raise ValueError("Missing env vars: EXTENDED_ACCOUNT_ID, EXTENDED_API_KEY, EXTENDED_API_SECRET")
+            raise RuntimeError(
+                "Missing EXTENDED_ACCOUNT_ID / EXTENDED_API_KEY / EXTENDED_API_SECRET"
+            )
 
-        # Initialize client
         self.client = ExtendedClient(
-            account_id,
-            api_key,
-            api_secret,
-            slippage_bps=self.get_config("slippage_bps", 50),
-            allow_fallback=False
+            account_id=account_id,
+            api_key=api_key,
+            api_secret=api_secret,
+            slippage_bps=int(self.get_config("slippage_bps", 50)),
+            allow_fallback=True,
         )
-        logger.info(f"{Fore.GREEN}Extended client initialized")
 
-        # Cached hedge ratio
-        self._cached_h: Optional[float] = None
-        self._h_last_update: float = 0
-        logger.info(f"{Fore.GREEN}Hedge ratio calculator based on 365-day returns initialized")
+        self.state_path = Path(__file__).parent / "state" / "state.json"
+        self.state: BotState = BotState.from_file(self.state_path) or BotState()
+        if self.state.hedge_ratio is not None:
+            logger.info("Restored hedge ratio %.4f from state", self.state.hedge_ratio)
 
-        # State
+        self._cached_hedge_ratio: Optional[float] = self.state.hedge_ratio
+        self._hedge_ratio_timestamp: float = 0.0
+
+        self.last_deploy_at: Optional[datetime] = (
+            datetime.fromisoformat(self.state.last_deploy_at)
+            if self.state.last_deploy_at
+            else None
+        )
+        self.next_refresh: Optional[datetime] = (
+            datetime.fromisoformat(self.state.next_refresh)
+            if self.state.next_refresh
+            else None
+        )
+        self.stoploss_triggered: bool = self.state.stoploss_triggered
+        self.reference_account_value: Optional[float] = self.state.reference_account_value
+
         self.running = True
-        self.next_refresh: Optional[datetime] = None
-        self.last_deploy_at: Optional[datetime] = None
-        self.stoploss_triggered = False
-
-        # State management
-        self.state_file = Path(__file__).parent / "state" / "state.json"
-        self.saved_hedge_ratio: Optional[float] = None
-        self.saved_btc_qty: Optional[float] = None
-        self.saved_eth_qty: Optional[float] = None
-        self.reference_account_value: Optional[float] = None
-        self._load_state()
-
-        # Restore hedge ratio from state if available
-        if self.saved_hedge_ratio is not None:
-            self._cached_h = self.saved_hedge_ratio
-            self._h_last_update = -1e12  # force early refresh regardless of mocked time
-            logger.info(f"{Fore.GREEN}Hedge ratio restored from state (stale): {self._cached_h:.4f}")
-
-        # Register signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
-    def _load_state(self):
-        """Load bot state from state.json."""
-        if not self.state_file.exists():
-            logger.info(f"{Fore.YELLOW}No state file found.")
-            return
-
-        try:
-            with open(self.state_file, 'r') as f:
-                state = json.load(f)
-
-            self.last_deploy_at = datetime.fromisoformat(state.get("last_deploy_at"))
-            self.next_refresh = datetime.fromisoformat(state.get("next_refresh"))
-            self.saved_hedge_ratio = state.get("hedge_ratio")
-            self.saved_btc_qty = state.get("btc_qty_target")
-            self.saved_eth_qty = state.get("eth_qty_target")
-            self.stoploss_triggered = state.get("stoploss_triggered", False)
-
-            # Get reference equity for long-term PnL tracking
-            self.reference_account_value = state.get("reference_account_value")
-            if self.reference_account_value is None:
-                logger.info("Reference account value not found in state, setting it to current equity.")
-                self.reference_account_value = self.client.get_equity()
-                # Re-save state immediately with the new reference value
-                self._save_state(
-                    self.saved_btc_qty, 
-                    self.saved_eth_qty, 
-                    self.saved_hedge_ratio
-                )
-
-            logger.info(f"{Fore.GREEN}State loaded: {state}")
-
-        except Exception as e:
-            logger.error(f"Failed to load state: {e}")
-            # In case of corrupted state, clear it
-            self._clear_state()
-
-    def _save_state(self, btc_qty: float, eth_qty: float, hedge_ratio: float):
-        """Save bot state to state.json."""
-        state = {
-            "last_deploy_at": self.last_deploy_at.isoformat() if self.last_deploy_at else None,
-            "next_refresh": self.next_refresh.isoformat() if self.next_refresh else None,
-            "hedge_ratio": hedge_ratio,
-            "btc_qty_target": btc_qty,
-            "eth_qty_target": eth_qty,
-            "stoploss_triggered": self.stoploss_triggered,
-            "reference_account_value": self.reference_account_value,
-        }
-
-        try:
-            # Ensure state directory exists
-            self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.state_file, 'w') as f:
-                json.dump(state, f, indent=4)
-            logger.info(f"State saved: {state}")
-        except Exception as e:
-            logger.error(f"Failed to save state: {e}")
-
-    def _clear_state(self):
-        """Clear bot state by deleting state.json."""
-        try:
-            if self.state_file.exists():
-                self.state_file.unlink()
-                logger.info("State file deleted.")
-        except Exception as e:
-            logger.error(f"Failed to clear state: {e}")
-
-
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals."""
-        logger.info(f"Received signal {signum}, shutting down...")
-        self.running = False
-
+    # ------------------------------------------------------------------
+    # Configuration helpers
+    # ------------------------------------------------------------------
     def get_config(self, key: str, default: Any = None) -> Any:
-        """Get config value with default."""
         return self.config.get(key, default)
 
-    def _calculate_new_hedge_ratio(self) -> Optional[float]:
-        """Calculates hedge ratio based on 365-day returns."""
-        try:
-            h, stats = calculate_hedge_ratio_auto(
-                window_hours=24 * 7,
-                method="ewma",
-                fallback_h=0.85,
-                use_api=True,
-                symbol_btc=self.BTC_SYMBOL,
-                symbol_eth=self.ETH_SYMBOL,
-                interval="1h",
-            )
-            if isinstance(h, (int, float)):
-                logger.info("Auto hedge ratio stats: %s", stats)
-                return float(h)
-        except Exception as primary_error:
-            logger.warning("Auto hedge ratio calculation failed: %s", primary_error)
+    # ------------------------------------------------------------------
+    # Signal handling / persistence
+    # ------------------------------------------------------------------
+    def _signal_handler(self, signum: int, _frame: Any) -> None:
+        logger.info("Received signal %s, preparing graceful shutdown.", signum)
+        self.running = False
+
+    def _persist_state(self) -> None:
+        payload = BotState(
+            hedge_ratio=self._cached_hedge_ratio,
+            btc_qty_target=self.state.btc_qty_target,
+            eth_qty_target=self.state.eth_qty_target,
+            last_deploy_at=self.last_deploy_at.isoformat() if self.last_deploy_at else None,
+            next_refresh=self.next_refresh.isoformat() if self.next_refresh else None,
+            stoploss_triggered=self.stoploss_triggered,
+            reference_account_value=self.reference_account_value,
+        )
+        self.state = payload
+        payload.to_file(self.state_path)
+
+    # ------------------------------------------------------------------
+    # Hedge ratio logic
+    # ------------------------------------------------------------------
+    def _fetch_daily_prices(self, symbol: str, days: int) -> pd.Series:
+        bars = max(days + 1, 2)
+        df, source, metadata = fetch_recent_klines(symbol, "1d", bars=bars)
+        if df.empty:
+            extra = ", ".join(f"{k}={v}" for k, v in metadata.items())
+            raise RuntimeError(f"No {symbol} price data available ({source}; {extra})")
+        df = df.tail(days + 1)
+        series = df.set_index("timestamp")["price"].astype(float)
+        logger.info(
+            "Fetched %d daily prices for %s via %s endpoint",
+            len(series),
+            symbol,
+            source,
+        )
+        return series
+
+    def _minimum_variance_hedge_ratio(self, force_refresh: bool = False) -> float:
+        cache_ttl = 3600.0
+        now = time.time()
+        if (
+            not force_refresh
+            and self._cached_hedge_ratio is not None
+            and now - self._hedge_ratio_timestamp < cache_ttl
+        ):
+            return float(self._cached_hedge_ratio)
+
+        days = int(self.get_config("hedge_ratio_days", 365))
+        fallback = float(self.get_config("fallback_hedge_ratio", 0.85))
+        ratio_min = float(self.get_config("hedge_ratio_min", 0.3))
+        ratio_max = float(self.get_config("hedge_ratio_max", 2.0))
 
         try:
-            import pandas as pd
-            import numpy as np
-            import scipy as sp
-
-            logger.info("Falling back to manual hedge ratio using 365 daily klines...")
-
-            btc_klines = get_klines('BTC', '1d', limit=365)
-            eth_klines = get_klines('ETH', '1d', limit=365)
-
-            if btc_klines.empty or eth_klines.empty:
-                logger.error("Could not fetch klines for one or both symbols.")
-                return None
-
-            prices = pd.merge(
-                btc_klines.rename(columns={'close': 'BTC'}),
-                eth_klines.rename(columns={'close': 'ETH'}),
-                on='datetime'
+            btc_prices = self._fetch_daily_prices(self.BTC_SYMBOL, days)
+            eth_prices = self._fetch_daily_prices(self.ETH_SYMBOL, days)
+            prices = pd.DataFrame({"BTC": btc_prices, "ETH": eth_prices}).dropna()
+            if len(prices) < 60:
+                raise ValueError("insufficient overlapping history")
+            returns = np.log(prices).diff().dropna()
+            if len(returns) < 30:
+                raise ValueError("insufficient return samples")
+            covariance = returns.cov()
+            var_eth = covariance.loc["ETH", "ETH"]
+            if var_eth <= 0:
+                raise ValueError("ETH variance not positive")
+            raw_ratio = covariance.loc["BTC", "ETH"] / var_eth
+            clipped_ratio = float(np.clip(raw_ratio, ratio_min, ratio_max))
+            self._cached_hedge_ratio = clipped_ratio
+            self._hedge_ratio_timestamp = now
+            logger.info(
+                "Minimum-variance hedge ratio %.4f (raw=%.4f, samples=%d)",
+                clipped_ratio,
+                raw_ratio,
+                len(returns),
             )
-            prices = prices.set_index('datetime')
+            return clipped_ratio
+        except Exception as exc:
+            logger.warning("Falling back to hedge ratio %.4f: %s", fallback, exc, exc_info=True)
+            self._cached_hedge_ratio = fallback
+            self._hedge_ratio_timestamp = now
+            return fallback
 
-            returns = prices.pct_change().dropna()
+    # ------------------------------------------------------------------
+    # Target sizing
+    # ------------------------------------------------------------------
+    def compute_targets(self) -> Tuple[float, float]:
+        equity = float(self.client.get_equity())
+        if equity <= 0:
+            raise RuntimeError("Equity reported as non-positive")
+        logger.info("Account equity: $%.2f", equity)
 
-            hedge_ratio = (
-                sp.stats.pearsonr(returns['BTC'], returns['ETH'])[0]
-                * np.std(returns['BTC'])
-                / np.std(returns['ETH'])
-            )
-
-            logger.info(f"Calculated fallback hedge ratio: {hedge_ratio}")
-            return hedge_ratio
-        except Exception as fallback_error:
-            logger.error("Manual hedge ratio calculation failed: %s", fallback_error, exc_info=True)
-            return None
-
-    def _get_hedge_ratio(self, force_refresh: bool = False) -> float:
-        """
-        Get hedge ratio with caching.
-
-        Recalculates if:
-        - Never calculated before
-        - force_refresh is True
-        - Cache is older than 1 hour
-
-        Returns:
-            Hedge ratio h
-        """
-        import time
-
-        # Check if we need to recalculate
-        cache_age = time.time() - self._h_last_update
-        need_calc = (
-            self._cached_h is None or
-            force_refresh or
-            cache_age > 3600  # 1 hour
+        capital_pct = float(self.get_config("capital_pct", 95)) / 100.0
+        leverage = float(self.get_config("leverage", 4))
+        deployable = equity * capital_pct
+        gross_notional = deployable * leverage
+        logger.info(
+            "Deploying %.1f%% of equity with %.1fx leverage (gross $%.2f)",
+            capital_pct * 100,
+            leverage,
+            gross_notional,
         )
 
-        if need_calc:
-            logger.info(f"{Fore.CYAN}Calculating hedge ratio using 365-day returns method...")
+        hedge_ratio = self._minimum_variance_hedge_ratio()
+        btc_mark = float(self.client.get_mark_price(self.BTC_SYMBOL))
+        eth_mark = float(self.client.get_mark_price(self.ETH_SYMBOL))
+        if btc_mark <= 0 or eth_mark <= 0:
+            raise RuntimeError("Invalid mark price returned from exchange")
+        logger.info("Mark prices BTC=$%.2f ETH=$%.2f", btc_mark, eth_mark)
 
-            try:
-                h = self._calculate_new_hedge_ratio()
+        btc_notional = gross_notional / (1.0 + hedge_ratio)
+        eth_notional = btc_notional * hedge_ratio
+        btc_qty = btc_notional / btc_mark
+        eth_qty = -(eth_notional / eth_mark)  # negative denotes a short
 
-                if h is not None:
-                    logger.info(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 25} HEDGE RATIO {'=' * 25}")
-                    logger.info(f"{Fore.CYAN}Hedge ratio: h = {Style.BRIGHT}{h:.4f}")
+        btc_qty = float(self.client.round_quantity(btc_qty, self.BTC_SYMBOL))
+        eth_qty = -float(self.client.round_quantity(abs(eth_qty), self.ETH_SYMBOL))
+        logger.info("Target sizes BTC=%.4f ETH=%.4f (hedge ratio %.4f)", btc_qty, eth_qty, hedge_ratio)
 
-                    # Calculate split
-                    btc_pct = 100 / (1 + h)
-                    eth_pct = 100 * h / (1 + h)
-                    logger.info(f"{Fore.YELLOW}  Portfolio split: {btc_pct:.1f}% BTC / {eth_pct:.1f}% ETH")
-                    logger.info(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 64}")
-
-                    self._cached_h = h
-                    self._h_last_update = time.time()
-                else:
-                    raise Exception("Hedge ratio calculation returned None")
-
-            except Exception as e:
-                logger.error(f"Hedge ratio calculation failed: {e}", exc_info=True)
-
-                # Use cached or fallback
-                if self._cached_h is not None:
-                    logger.info(f"{Fore.YELLOW}Using cached hedge ratio: {self._cached_h:.4f}")
-                else:
-                    self._cached_h = 0.85
-                    logger.info(f"{Fore.YELLOW}Using fallback hedge ratio: {self._cached_h:.4f}")
-
-        return self._cached_h
-
-    def compute_targets(self) -> Tuple[float, float]:
-        """
-        Compute target quantities for BTC and ETH.
-
-        Returns:
-            (btc_qty, eth_qty) - positive for long, negative for short
-        """
-        # Get equity
-        equity = self.client.get_equity()
-        logger.info(f"{Fore.GREEN}Account equity: ${equity:.2f}")
-
-        # Calculate deployed capital
-        capital_pct = self.get_config("capital_pct", 95)
-        capital = equity * (capital_pct / 100.0)
-        logger.info(f"{Fore.CYAN}Deploying {capital_pct}% of equity: ${capital:.2f}")
-
-        # Apply leverage
-        leverage = self.get_config("leverage", 4)
-        gross_notional = capital * leverage
-        logger.info(f"{Fore.CYAN}Gross notional (with {leverage}x leverage): ${gross_notional:.2f}")
-
-        # Get hedge ratio (use cache if recent, otherwise recalculate)
-        h = self._get_hedge_ratio()
-        logger.info(f"Hedge ratio: {h:.4f}")
-
-        # Get mark prices
-        p_btc = self.client.get_mark_price(self.BTC_SYMBOL)
-        p_eth = self.client.get_mark_price(self.ETH_SYMBOL)
-        logger.info(f"{Fore.WHITE}Mark prices - BTC: ${p_btc:.2f}, ETH: ${p_eth:.2f}")
-
-        # Calculate notionals
-        # N_btc = gross / (1 + h)
-        # N_eth = h * N_btc
-        n_btc_usd = gross_notional / (1.0 + h)
-        n_eth_usd = h * n_btc_usd
-
-        logger.info(f"{Fore.YELLOW}Target notionals - BTC: ${n_btc_usd:.2f}, ETH: ${n_eth_usd:.2f}")
-
-        # Convert to quantities
-        q_btc = n_btc_usd / p_btc
-        q_eth = n_eth_usd / p_eth
-
-        # Round to lot sizes
-        q_btc = self.client.round_quantity(q_btc, self.BTC_SYMBOL)
-        q_eth = self.client.round_quantity(q_eth, self.ETH_SYMBOL)
-
-        logger.info(f"{Fore.YELLOW}Target quantities - BTC: {q_btc:.4f}, ETH: {q_eth:.4f}")
-
-        # Check margin health (simple check: ensure notionals don't exceed max)
-        max_leverage_btc = self.client.get_max_leverage(self.BTC_SYMBOL)
-        max_leverage_eth = self.client.get_max_leverage(self.ETH_SYMBOL)
-
-        required_margin_btc = (q_btc * p_btc) / max_leverage_btc
-        required_margin_eth = (q_eth * p_eth) / max_leverage_eth
-        total_required_margin = required_margin_btc + required_margin_eth
-
-        if total_required_margin > equity:
-            # Scale down proportionally
-            scale = equity / total_required_margin * 0.95  # 5% safety margin
-            q_btc *= scale
-            q_eth *= scale
-
-            q_btc = self.client.round_quantity(q_btc, self.BTC_SYMBOL)
-            q_eth = self.client.round_quantity(q_eth, self.ETH_SYMBOL)
-
-            logger.warning(f"Scaled down positions for margin health: BTC={q_btc:.4f}, ETH={q_eth:.4f}")
-
-        return q_btc, q_eth
-
-    def _positions_match_targets(
-        self,
-        pos_btc: Dict[str, Any],
-        pos_eth: Dict[str, Any],
-        target_btc_qty: float,
-        target_eth_qty: float,
-        tolerance_pct: float = 0.05
-    ) -> bool:
-        """
-        Determine whether current positions already match desired targets.
-
-        Args:
-            pos_btc: Current BTC position dict.
-            pos_eth: Current ETH position dict.
-            target_btc_qty: Target BTC quantity (positive for long).
-            target_eth_qty: Target ETH quantity (positive notion for short leg).
-            tolerance_pct: Relative tolerance allowed between current and target quantities.
-
-        Returns:
-            True if positions align with targets (within tolerance), False otherwise.
-        """
-        logger.info("Checking if positions match targets...")
-        expected_btc_qty = float(target_btc_qty)
-        expected_eth_qty = -float(target_eth_qty)
-        logger.info(f"{Fore.CYAN}Target quantities: BTC={expected_btc_qty:.4f}, ETH={expected_eth_qty:.4f}")
-        logger.info(f"{Fore.WHITE}Actual positions:  BTC={pos_btc.get('qty', 0.0):.4f}, ETH={pos_eth.get('qty', 0.0):.4f}")
-
-
-        if pos_btc.get("qty", 0.0) == 0 and pos_eth.get("qty", 0.0) == 0:
-            return False # Not aligned if targets are non-zero
-
-        # Require proper directionality (long BTC, short ETH)
-        if expected_btc_qty <= 0 or expected_eth_qty >= 0:
-            logger.warning("Target directionality is incorrect.")
-            return False
-        if pos_btc.get("qty", 0.0) < 0 or pos_eth.get("qty", 0.0) > 0:
-            logger.warning("Actual position directionality is incorrect.")
-            return False
-
-        try:
-            lot_btc = abs(float(self.client.get_lot_size(self.BTC_SYMBOL)))
-        except (TypeError, ValueError):
-            lot_btc = 0.0
-        try:
-            lot_eth = abs(float(self.client.get_lot_size(self.ETH_SYMBOL)))
-        except (TypeError, ValueError):
-            lot_eth = 0.0
-
-        lot_btc = lot_btc if lot_btc > 0 else 0.0001
-        lot_eth = lot_eth if lot_eth > 0 else 0.001
-
-        def matches(actual: float, expected: float, lot_size: float, symbol: str) -> bool:
-            if expected == 0:
-                match = abs(actual) <= lot_size
-                logger.info(f"[{symbol}] Match check (expected is 0): actual={actual:.4f}, lot_size={lot_size:.4f} -> {match}")
-                return match
-
-            diff = abs(actual - expected)
-            threshold = max(lot_size, abs(expected) * tolerance_pct)
-            match = diff <= threshold
-            logger.info(f"[{symbol}] Match check: actual={actual:.4f}, expected={expected:.4f}, diff={diff:.4f}, threshold={threshold:.4f} -> {match}")
-            return match
-
-        btc_ok = matches(float(pos_btc.get("qty", 0.0)), expected_btc_qty, lot_btc, self.BTC_SYMBOL)
-        eth_ok = matches(float(pos_eth.get("qty", 0.0)), expected_eth_qty, lot_eth, self.ETH_SYMBOL)
-
-        result = btc_ok and eth_ok
-        logger.info(f"Positions match targets: {result} (BTC: {btc_ok}, ETH: {eth_ok})")
-        return result
-
-    def _infer_position_open_time(self, *positions: Dict[str, Any]) -> Optional[datetime]:
-        """
-        Infer the earliest open timestamp from provided positions.
-
-        Args:
-            positions: Position dicts that may contain 'opened_at' (seconds since epoch).
-
-        Returns:
-            datetime of earliest open if available, otherwise None.
-        """
-        timestamps = []
-        for pos in positions:
-            raw = pos.get("opened_at")
-            if raw is None:
-                continue
-            try:
-                ts = float(raw)
-                if ts > 1e12:  # protect against ms
-                    ts = ts / 1000.0
-                timestamps.append(datetime.fromtimestamp(ts))
-            except Exception:
-                continue
-
-        if timestamps:
-            return min(timestamps)
-        return None
-
-    def market_simple(
-        self,
-        symbol: str,
-        side: str,  # "buy" or "sell"
-        quantity: float,
-        reduce_only: bool = False
-    ):
-        """
-        Execute a market order.
-        Args:
-            symbol: Trading symbol
-            side: "buy" or "sell"
-            quantity: Quantity to trade
-            reduce_only: Reduce-only flag
-        """
-        if quantity <= 0:
-            logger.warning(f"Skipping {side} {symbol}: quantity={quantity}")
-            return
-
-        logger.info(f"Placing {side} market order for {quantity:.4f} {symbol} (reduce_only={reduce_only})")
-
-        try:
-            # Place market order
-            order_id = self.client.place_market_order(
-                symbol=symbol,
-                side=side,
-                quantity=quantity,
-                reduce_only=reduce_only
+        # Sanity-check margin requirements; scale down if needed
+        max_lev_btc = float(self.client.get_max_leverage(self.BTC_SYMBOL) or 1)
+        max_lev_eth = float(self.client.get_max_leverage(self.ETH_SYMBOL) or 1)
+        required_margin = abs(btc_qty * btc_mark) / max_lev_btc + abs(eth_qty * eth_mark) / max_lev_eth
+        if required_margin > equity:
+            scale = equity / required_margin * 0.95
+            logger.info(
+                "Required margin $%.2f exceeds equity; scaling positions by %.2f%%",
+                required_margin,
+                scale * 100,
+            )
+            btc_qty = float(self.client.round_quantity(btc_qty * scale, self.BTC_SYMBOL))
+            eth_qty = -float(
+                self.client.round_quantity(abs(eth_qty) * scale, self.ETH_SYMBOL)
             )
 
-            logger.info(f"Market order placed: {order_id}")
+        return btc_qty, eth_qty
 
-        except Exception as e:
-            logger.error(f"Failed to execute market order: {e}")
+    # ------------------------------------------------------------------
+    # Exchange actions
+    # ------------------------------------------------------------------
+    def open_pair(self, targets: Optional[Tuple[float, float]] = None) -> None:
+        btc_qty, eth_qty = targets or self.compute_targets()
+        if btc_qty <= 0 or eth_qty >= 0:
+            raise RuntimeError("Invalid target quantities for long/short pair")
 
-    def open_pair(self, targets: Optional[Tuple[float, float]] = None):
-        """Open BTC long and ETH short positions."""
-        logger.info(f"{Fore.CYAN}{'=' * 60}")
-        logger.info(f"{Fore.CYAN}OPENING PAIR POSITIONS")
-        logger.info(f"{Fore.CYAN}{'=' * 60}")
+        logger.info("Opening BTC long %.4f and ETH short %.4f", btc_qty, abs(eth_qty))
+        btc_order = self.client.place_market_order(
+            symbol=self.BTC_SYMBOL,
+            side="buy",
+            quantity=btc_qty,
+            reduce_only=False,
+        )
+        logger.info("BTC market buy submitted (order %s)", btc_order)
+        time.sleep(0.5)
+        eth_order = self.client.place_market_order(
+            symbol=self.ETH_SYMBOL,
+            side="sell",
+            quantity=abs(eth_qty),
+            reduce_only=False,
+        )
+        logger.info("ETH market sell submitted (order %s)", eth_order)
 
-        try:
-            # Compute targets
-            if targets is None:
-                if self.saved_btc_qty is not None and self.saved_eth_qty is not None:
-                    q_btc, q_eth = self.saved_btc_qty, self.saved_eth_qty
-                else:
-                    q_btc, q_eth = self.compute_targets()
-            else:
-                q_btc, q_eth = targets
+        self.state.btc_qty_target = btc_qty
+        self.state.eth_qty_target = eth_qty
+        self.last_deploy_at = datetime.utcnow()
+        refresh_hours = float(self.get_config("refresh_hours", 8))
+        self.next_refresh = self.last_deploy_at + timedelta(hours=refresh_hours)
+        self.stoploss_triggered = False
+        if self.reference_account_value is None:
+            self.reference_account_value = float(self.client.get_equity())
+        self._persist_state()
 
-            q_btc = float(q_btc)
-            q_eth = float(q_eth)
-
-            # Open BTC long
-            logger.info(f"{Fore.GREEN}Opening BTC long: {q_btc:.4f} {self.BTC_SYMBOL}")
-            btc_order_id = self.client.place_market_order(
-                symbol=self.BTC_SYMBOL,
-                side="buy",
-                quantity=q_btc,
-                reduce_only=False,
-            )
-            logger.info(f"BTC long order placed: {btc_order_id}")
-
-            # Small delay between orders
-            time.sleep(0.5)
-
-            # Open ETH short
-            logger.info(f"{Fore.RED}Opening ETH short: {q_eth:.4f} {self.ETH_SYMBOL}")
-            eth_order_id = self.client.place_market_order(
-                symbol=self.ETH_SYMBOL,
-                side="sell",
-                quantity=q_eth,
-                reduce_only=False,
-            )
-            logger.info(f"ETH short order placed: {eth_order_id}")
-
-
-            logger.info("Pair positions opened")
-            self.last_deploy_at = datetime.now()
-            if self.reference_account_value is None:
-                self.reference_account_value = self.client.get_equity()
-            refresh_hours = self.get_config("refresh_hours", 8)
-            self.next_refresh = self.last_deploy_at + timedelta(hours=refresh_hours)
-            self._save_state(q_btc, q_eth, self._get_hedge_ratio())
-
-        except Exception as e:
-            logger.error(f"Failed to open pair: {e}")
-
-    def close_pair(self):
-        """Close BTC and ETH positions."""
-        logger.info(f"{Fore.CYAN}{'=' * 60}")
-        logger.info(f"{Fore.CYAN}CLOSING PAIR POSITIONS")
-        logger.info(f"{Fore.CYAN}{'=' * 60}")
-
-        try:
-            # Get current positions
-            pos_btc = self.client.get_position(self.BTC_SYMBOL)
-            pos_eth = self.client.get_position(self.ETH_SYMBOL)
-
-            logger.info(f"Current positions - BTC: {pos_btc['qty']:.4f}, ETH: {pos_eth['qty']:.4f}")
-
-            # Close BTC position (if long)
-            if pos_btc['qty'] > 0:
-                logger.info(f"{Fore.RED}Closing BTC long: {pos_btc['qty']:.4f} {self.BTC_SYMBOL}")
-                btc_order_id = self.client.place_market_order(
-                    symbol=self.BTC_SYMBOL,
-                    side="sell",
-                    quantity=pos_btc['qty'],
-                    reduce_only=True,
-                )
-                logger.info(f"BTC close order placed: {btc_order_id}")
-
-
-            # Small delay
-            time.sleep(0.5)
-
-            # Close ETH position (if short)
-            if pos_eth['qty'] < 0:
-                logger.info(f"{Fore.GREEN}Closing ETH short: {abs(pos_eth['qty']):.4f} {self.ETH_SYMBOL}")
-                eth_order_id = self.client.place_market_order(
-                    symbol=self.ETH_SYMBOL,
-                    side="buy",
-                    quantity=abs(pos_eth['qty']),
-                    reduce_only=True,
-                )
-                logger.info(f"ETH close order placed: {eth_order_id}")
-
-            logger.info("Pair positions closed")
-            self._clear_state()
-
-        except Exception as e:
-            logger.error(f"Failed to close pair: {e}")
-
-    def check_stoploss(self) -> bool:
-        """
-        Check if stop-loss is triggered on either leg.
-
-        Returns:
-            True if stop-loss triggered, False otherwise
-        """
-        stoploss_pct = self.get_config("stoploss_pct", 5) / 100.0
-
-        try:
-            # Check BTC position
-            pos_btc = self.client.get_position(self.BTC_SYMBOL)
-            if pos_btc['notional'] > 0:
-                pnl_pct_btc = pos_btc['unrealized_pnl'] / pos_btc['notional']
-                if pnl_pct_btc <= -stoploss_pct:
-                    logger.warning(f"{Fore.RED}⚠️  STOP-LOSS TRIGGERED on BTC: PnL {pnl_pct_btc*100:.2f}%")
-                    return True
-
-            # Check ETH position
-            pos_eth = self.client.get_position(self.ETH_SYMBOL)
-            if pos_eth['notional'] > 0:
-                pnl_pct_eth = pos_eth['unrealized_pnl'] / pos_eth['notional']
-                if pnl_pct_eth <= -stoploss_pct:
-                    logger.warning(f"{Fore.RED}⚠️  STOP-LOSS TRIGGERED on ETH: PnL {pnl_pct_eth*100:.2f}%")
-                    return True
-
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to check stop-loss: {e}")
-            return False
-
-    def reconcile_and_update_state(self):
-        """
-        Reconcile current positions to new targets by closing all and reopening.
-        """
-        logger.info("Reconciling positions: closing all and reopening with new targets.")
-        try:
-            # Close all existing positions to ensure a clean slate
-            self.close_pair()
-            time.sleep(2)  # Give time for orders to process
-
-            # Open new positions with freshly computed targets
-            self.open_pair()
-
-            logger.info("Reconciliation complete. New positions opened.")
-
-        except Exception as e:
-            logger.error(f"Failed to reconcile positions: {e}", exc_info=True)
-
-    def print_status(self):
-        """Print current status."""
-        try:
-            equity = self.client.get_equity()
-            pos_btc = self.client.get_position(self.BTC_SYMBOL)
-            pos_eth = self.client.get_position(self.ETH_SYMBOL)
-
-            total_pnl = pos_btc['unrealized_pnl'] + pos_eth['unrealized_pnl']
-            pnl_color = Fore.GREEN if total_pnl >= 0 else Fore.RED
-            btc_pnl_color = Fore.GREEN if pos_btc['unrealized_pnl'] >= 0 else Fore.RED
-            eth_pnl_color = Fore.GREEN if pos_eth['unrealized_pnl'] >= 0 else Fore.RED
-
-            logger.info(f"{Fore.MAGENTA}{'-' * 60}")
-            logger.info(f"{Fore.YELLOW}Equity: ${equity:.2f} | Total PnL for current position: {pnl_color}${total_pnl:.2f}")
-            
-            if self._cached_h is not None:
-                logger.info(f"{Fore.CYAN}Hedge Ratio: {self._cached_h:.4f}")
-                # Calculate and show split
-                btc_pct = 100 / (1 + self._cached_h)
-                eth_pct = 100 * self._cached_h / (1 + self._cached_h)
-                logger.info(f"{Fore.YELLOW}  Portfolio split: {btc_pct:.1f}% BTC / {eth_pct:.1f}% ETH")
-
-            if self.reference_account_value is not None and self.reference_account_value > 0:
-                long_term_pnl = equity - self.reference_account_value
-                long_term_pnl_pct = (long_term_pnl / self.reference_account_value) * 100
-                long_term_pnl_color = Fore.GREEN if long_term_pnl >= 0 else Fore.RED
-                logger.info(f"Long-term PnL: {long_term_pnl_color}${long_term_pnl:.2f} ({long_term_pnl_pct:+.2f}%)" f"{Style.RESET_ALL} | Reference Equity: ${self.reference_account_value:.2f}")
-
-            logger.info(f"BTC: {pos_btc['qty']:.4f} @ ${pos_btc['entry_price']:.2f} | PnL: {btc_pnl_color}${pos_btc['unrealized_pnl']:.2f}")
-            logger.info(f"ETH: {pos_eth['qty']:.4f} @ ${pos_eth['entry_price']:.2f} | PnL: {eth_pnl_color}${pos_eth['unrealized_pnl']:.2f}")
-
-            if self.next_refresh:
-                time_to_refresh = (self.next_refresh - datetime.now()).total_seconds() / 60
-                logger.info(f"{Fore.CYAN}Next refresh in: {time_to_refresh:.1f} minutes")
-
-            if self.stoploss_triggered:
-                logger.info(f"{Fore.RED}⚠️  STOP-LOSS ACTIVE - Waiting for next refresh")
-
-            logger.info(f"{Fore.MAGENTA}{'-' * 60}")
-
-        except Exception as e:
-            logger.error(f"Failed to print status: {e}")
-
-    def run(self):
-        """Main bot loop."""
-        logger.info(f"{Fore.BLUE}{'=' * 60}")
-        logger.info(f"{Fore.BLUE}BTC-ETH HEDGE BOT STARTING")
-        logger.info(f"{Fore.BLUE}{'=' * 60}")
-
-        # Get hedge ratio on startup before doing anything else
-        logger.info("Calculating initial hedge ratio...")
-        self._get_hedge_ratio(force_refresh=True)
-
-        # Cancel all orders on startup
-        logger.info("Cancelling all open orders...")
-        self.client.cancel_all_orders()
-        time.sleep(1)
-
-        # Check for existing positions and state
+    def close_pair(self) -> None:
+        logger.info("Closing hedge pair positions")
         pos_btc = self.client.get_position(self.BTC_SYMBOL)
         pos_eth = self.client.get_position(self.ETH_SYMBOL)
 
-        # Scenario 1: State file exists
-        if self.saved_btc_qty is not None and self.saved_eth_qty is not None:
-            logger.info("Saved state found. Checking alignment against saved targets.")
-            if self._positions_match_targets(pos_btc, pos_eth, self.saved_btc_qty, self.saved_eth_qty):
-                logger.info(f"{Fore.GREEN}Positions align with saved state. Resuming operation.")
-            else:
-                logger.warning(f"{Fore.YELLOW}Positions do NOT align with saved state. Reconciling.")
-                self.reconcile_and_update_state()
-        
-        # Scenario 2: No state file
+        if pos_btc.get("qty", 0.0) > 0:
+            order = self.client.place_market_order(
+                symbol=self.BTC_SYMBOL,
+                side="sell",
+                quantity=pos_btc["qty"],
+                reduce_only=True,
+            )
+            logger.info("Closed BTC long via order %s", order)
+            time.sleep(0.5)
+
+        if pos_eth.get("qty", 0.0) < 0:
+            order = self.client.place_market_order(
+                symbol=self.ETH_SYMBOL,
+                side="buy",
+                quantity=abs(pos_eth["qty"]),
+                reduce_only=True,
+            )
+            logger.info("Closed ETH short via order %s", order)
+
+        self.state.btc_qty_target = 0.0
+        self.state.eth_qty_target = 0.0
+        self._persist_state()
+
+    def reconcile_positions(self) -> None:
+        logger.info("Reconciling on-disk state with live positions")
+        self.close_pair()
+        time.sleep(1.0)
+        self.open_pair()
+
+    # ------------------------------------------------------------------
+    # Monitoring helpers
+    # ------------------------------------------------------------------
+    def _positions_match_targets(
+        self, pos_btc: Dict[str, Any], pos_eth: Dict[str, Any], target_btc: float, target_eth: float
+    ) -> bool:
+        tolerance_pct = float(self.get_config("position_tolerance_pct", 5)) / 100.0
+        btc_lot = max(self.client.get_lot_size(self.BTC_SYMBOL), 1e-6)
+        eth_lot = max(self.client.get_lot_size(self.ETH_SYMBOL), 1e-6)
+
+        def _matches(actual: float, target: float, lot: float) -> bool:
+            if abs(target) < lot:
+                return abs(actual) < lot
+            allowance = max(abs(target) * tolerance_pct, lot)
+            return abs(actual - target) <= allowance
+
+        btc_match = _matches(pos_btc.get("qty", 0.0), target_btc, btc_lot)
+        eth_match = _matches(pos_eth.get("qty", 0.0), target_eth, eth_lot)
+        logger.info(
+            "Position check -> BTC match=%s (actual %.4f target %.4f) | ETH match=%s (actual %.4f target %.4f)",
+            btc_match,
+            pos_btc.get("qty", 0.0),
+            target_btc,
+            eth_match,
+            pos_eth.get("qty", 0.0),
+            target_eth,
+        )
+        return btc_match and eth_match
+
+    def check_stoploss(self) -> bool:
+        threshold = float(self.get_config("stoploss_pct", 10)) / 100.0
+        if threshold <= 0:
+            return False
+        try:
+            pos_btc = self.client.get_position(self.BTC_SYMBOL)
+            pos_eth = self.client.get_position(self.ETH_SYMBOL)
+        except Exception as exc:
+            logger.error("Failed to fetch positions for stop-loss check: %s", exc)
+            return False
+
+        def _leg_hit(position: Dict[str, Any]) -> bool:
+            notional = float(position.get("notional") or 0.0)
+            pnl = float(position.get("unrealized_pnl") or 0.0)
+            if notional <= 0:
+                return False
+            pct = pnl / notional
+            return pct <= -threshold
+
+        btc_hit = _leg_hit(pos_btc)
+        eth_hit = _leg_hit(pos_eth)
+        if btc_hit or eth_hit:
+            leg = "BTC" if btc_hit else "ETH"
+            logger.warning("Stop-loss triggered on %s leg", leg)
+            return True
+        return False
+
+    def print_status(self) -> None:
+        try:
+            equity = float(self.client.get_equity())
+            pos_btc = self.client.get_position(self.BTC_SYMBOL)
+            pos_eth = self.client.get_position(self.ETH_SYMBOL)
+        except Exception as exc:
+            logger.error("Failed to fetch status: %s", exc)
+            return
+
+        total_pnl = float(pos_btc.get("unrealized_pnl", 0.0)) + float(
+            pos_eth.get("unrealized_pnl", 0.0)
+        )
+        pnl_colour = Fore.GREEN if total_pnl >= 0 else Fore.RED
+        logger.info(Fore.MAGENTA + "-" * 72)
+        logger.info(
+            "Equity $%.2f | Combined PnL %s$%.2f",
+            equity,
+            pnl_colour,
+            total_pnl,
+        )
+        if self._cached_hedge_ratio is not None:
+            h = float(self._cached_hedge_ratio)
+            btc_pct = 100.0 / (1.0 + h)
+            eth_pct = 100.0 * h / (1.0 + h)
+            logger.info("Hedge ratio %.4f -> %.1f%% BTC / %.1f%% ETH", h, btc_pct, eth_pct)
+        if self.reference_account_value:
+            delta = equity - self.reference_account_value
+            pct = delta / self.reference_account_value * 100.0
+            colour = Fore.GREEN if delta >= 0 else Fore.RED
+            logger.info(
+                "Long-term PnL %s$%.2f (%.2f%%) vs reference $%.2f",
+                colour,
+                delta,
+                pct,
+                self.reference_account_value,
+            )
+        logger.info(
+            "BTC qty %.4f entry $%.2f | ETH qty %.4f entry $%.2f",
+            pos_btc.get("qty", 0.0),
+            pos_btc.get("entry_price", 0.0),
+            pos_eth.get("qty", 0.0),
+            pos_eth.get("entry_price", 0.0),
+        )
+        if self.next_refresh:
+            eta = self.next_refresh - datetime.utcnow()
+            minutes = max(eta.total_seconds() / 60.0, 0.0)
+            logger.info("Next refresh in %.1f minutes", minutes)
+        if self.stoploss_triggered:
+            logger.info(Fore.RED + "Stop-loss triggered; awaiting next refresh window")
+        logger.info(Fore.MAGENTA + "-" * 72)
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+    def run(self) -> None:
+        logger.info("Starting hedge bot")
+        self._minimum_variance_hedge_ratio(force_refresh=True)
+        try:
+            self.client.cancel_all_orders()
+        except Exception as exc:
+            logger.warning("Failed to cancel resting orders: %s", exc)
+
+        pos_btc = self.client.get_position(self.BTC_SYMBOL)
+        pos_eth = self.client.get_position(self.ETH_SYMBOL)
+
+        if self.state.btc_qty_target or self.state.eth_qty_target:
+            logger.info("State targets detected; validating live positions")
+            if not self._positions_match_targets(
+                pos_btc, pos_eth, self.state.btc_qty_target, self.state.eth_qty_target
+            ):
+                logger.warning("Stored state and live positions diverge; reconciling")
+                self.reconcile_positions()
         else:
-            logger.info("No state file found.")
-            if pos_btc['qty'] != 0 or pos_eth['qty'] != 0:
-                logger.warning(f"{Fore.YELLOW}Orphan positions found without a state file. Reconciling.")
-                self.reconcile_and_update_state()
+            if pos_btc.get("qty", 0.0) or pos_eth.get("qty", 0.0):
+                logger.warning("Live positions found without state; reconciling")
+                self.reconcile_positions()
             else:
-                logger.info("No existing positions or state. Opening initial pair.")
+                logger.info("No open positions; deploying fresh pair")
                 self.open_pair()
 
-        # Print initial status
-        self.print_status()
-
-        # Main loop
-        last_status_print = time.time()
-        status_interval = self.get_config("status_interval_seconds", 60)
+        status_interval = float(self.get_config("status_interval_seconds", 60))
+        loop_sleep = float(self.get_config("loop_sleep_seconds", 15))
+        last_status = 0.0
 
         while self.running:
-
+            now = time.time()
             try:
-                # Check stop-loss
                 if not self.stoploss_triggered and self.check_stoploss():
-                    logger.warning(f"{Fore.RED}🛑 STOP-LOSS TRIGGERED - Closing all positions")
+                    logger.warning("Stop-loss hit -> closing pair")
                     self.close_pair()
                     self.stoploss_triggered = True
-                    logger.info(f"Waiting until next refresh at {self.next_refresh}")
+                    refresh_hours = float(self.get_config("refresh_hours", 8))
+                    self.next_refresh = datetime.utcnow() + timedelta(hours=refresh_hours)
+                    self._persist_state()
 
-                # Check refresh time
-                if self.next_refresh and datetime.now() >= self.next_refresh:
-                    logger.info(f"{Fore.CYAN}⏰ Refresh time reached")
-
-                    # Close existing positions
+                if self.next_refresh and datetime.utcnow() >= self.next_refresh:
+                    logger.info("Refresh window reached; recycling positions")
                     self.close_pair()
-                    time.sleep(2)
-
-                    # Reset stop-loss flag
-                    self.stoploss_triggered = False
-
-                    # Refresh hedge ratio (force recalculation)
-                    self._get_hedge_ratio(force_refresh=True)
-
-                    # Open new positions
-                    target_btc_qty, target_eth_qty = self.compute_targets()
-                    self.open_pair(targets=(target_btc_qty, target_eth_qty))
-
-                    # Schedule next refresh
-                    refresh_hours = self.get_config("refresh_hours", 8)
-                    if self.last_deploy_at is not None:
-                        self.next_refresh = self.last_deploy_at + timedelta(hours=refresh_hours)
+                    time.sleep(1.0)
+                    self._minimum_variance_hedge_ratio(force_refresh=True)
+                    if not self.stoploss_triggered:
+                        self.open_pair()
                     else:
-                        self.next_refresh = datetime.now() + timedelta(hours=refresh_hours)
-                    logger.info(f"Next refresh scheduled for: {self.next_refresh}")
+                        logger.info(
+                            "Stop-loss active; delaying new deployment until next cycle"
+                        )
+                        self.next_refresh = datetime.utcnow() + timedelta(
+                            hours=float(self.get_config("refresh_hours", 8))
+                        )
+                        self._persist_state()
 
-                # Print status periodically
-                if time.time() - last_status_print >= status_interval:
+                if now - last_status >= status_interval:
                     self.print_status()
-                    last_status_print = time.time()
+                    last_status = now
+            except Exception as exc:
+                logger.error("Error in main loop: %s", exc, exc_info=True)
+            time.sleep(loop_sleep)
 
-                # Sleep
-                sleep_duration = self.get_config("loop_sleep_seconds", 5)
-                time.sleep(sleep_duration)
-
-            except KeyboardInterrupt:
-                logger.info("Keyboard interrupt received")
-                self.running = False
-            except Exception as e:
-                logger.error(f"Error in main loop: {e}", exc_info=True)
-                time.sleep(10)
-
-        # Shutdown
-        logger.info("Shutting down...")
-        # logger.info("Closing all positions...")
-        # self.close_pair()
-        # time.sleep(2)
-
-        logger.info("Cancelling all orders...")
-        self.client.cancel_all_orders()
-
-        logger.info(f"{Fore.BLUE}{'=' * 60}")
-        logger.info(f"{Fore.BLUE}BOT STOPPED")
-        logger.info(f"{Fore.BLUE}{'=' * 60}")
+        logger.info("Exiting main loop; leaving positions open by design")
+        self._persist_state()
 
 
-def main():
-    """Entry point."""
-    config_path = Path(__file__).parent / "config.json"
-
-    if not config_path.exists():
-        logger.error(f"Config file not found: {config_path}")
-        logger.error("Please create config.json with required parameters")
-        sys.exit(1)
-
-    try:
-        bot = HedgeBot(config_path)
-        bot.run()
-    except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
-        sys.exit(1)
+def main() -> None:
+    config_path = Path(__file__).with_name("config.json")
+    bot = HedgeBot(config_path)
+    bot.run()
 
 
 if __name__ == "__main__":
