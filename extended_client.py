@@ -17,11 +17,11 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 import requests
+from requests import HTTPError, RequestException
+
+from extended_endpoints import get_rest_base_urls, join_url
 
 logger = logging.getLogger(__name__)
-
-REST_URL = "https://api.extended.exchange/api"
-
 
 @dataclass
 class _MarketPrecision:
@@ -53,6 +53,10 @@ class ExtendedClient:
         self.allow_fallback = allow_fallback
         self.session = requests.Session()
         self.session.headers.update({"X-EXT-APIKEY": api_key})
+
+        self._rest_base_urls = get_rest_base_urls()
+        if not self._rest_base_urls:
+            raise RuntimeError("No REST base URLs configured for Extended API")
 
         self._market_info: Dict[str, _MarketPrecision] = {}
         self._load_market_info()
@@ -93,7 +97,6 @@ class ExtendedClient:
     ) -> Dict[str, Any]:
         """Perform an HTTP request to the Extended API."""
 
-        url = f"{REST_URL}{path}"
         headers: Dict[str, str] = {}
         if private:
             timestamp, signature = self._sign(method, path, params, json_body)
@@ -105,12 +108,40 @@ class ExtendedClient:
                     "Content-Type": "application/json",
                 }
             )
-        response = self.session.request(method, url, params=params, json=json_body, headers=headers, timeout=timeout)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, dict) and payload.get("success") is False:
-            raise ValueError(payload.get("error", "Unknown API error"))
-        return payload
+
+        last_exc: Optional[Exception] = None
+        for base_url in self._rest_base_urls:
+            url = join_url(base_url, path)
+            try:
+                response = self.session.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, dict) and payload.get("success") is False:
+                    raise ValueError(payload.get("error", "Unknown API error"))
+                # Promote the successful base to the front for future requests.
+                if base_url != self._rest_base_urls[0]:
+                    self._rest_base_urls.remove(base_url)
+                    self._rest_base_urls.insert(0, base_url)
+                return payload
+            except HTTPError as exc:
+                last_exc = exc
+                status = exc.response.status_code if exc.response is not None else None
+                if status not in {404, 405}:
+                    raise
+            except RequestException as exc:  # pragma: no cover - network failure path
+                last_exc = exc
+                continue
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Extended API request failed without exception")
 
     # ------------------------------------------------------------------
     # Market metadata
