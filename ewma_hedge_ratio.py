@@ -16,9 +16,21 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Dict
 from math import log, exp, isfinite
 
+from extended_endpoints import iter_candidate_urls
 
-API_BASE_URL = "https://api.pacifica.fi/api/v1"
-KLINE_ENDPOINT = f"{API_BASE_URL}/kline"
+
+KLINE_PATH_OPTIONS = (
+    "public/v1/klines",
+    "public/v1/kline",
+    "public/klines",
+    "public/kline",
+    "v1/public/klines",
+    "v1/public/kline",
+    "v1/klines",
+    "v1/kline",
+    "klines",
+    "kline",
+)
 _PRICE_CACHE: Dict[Tuple[str, str, int, str], Tuple[List[float], List[float], dict]] = {}
 
 # Thresholds used to detect suspiciously low variance/covariance
@@ -341,7 +353,7 @@ def _fetch_klines_data(
     end_time_ms: int
 ) -> pd.DataFrame:
     """
-    Fetch kline data from Pacifica REST API for a single symbol.
+    Fetch kline data from Extended REST API for a single symbol.
 
     Splits requests into batches if the requested range exceeds the API
     per-request limit. Returns a DataFrame sorted by timestamp.
@@ -354,6 +366,9 @@ def _fetch_klines_data(
     klines: List[dict] = []
     current_start = start_time_ms
     attempts = 0
+    endpoint_candidates = list(iter_candidate_urls(KLINE_PATH_OPTIONS))
+    if not endpoint_candidates:
+        raise RuntimeError("No Extended API endpoints configured for klines")
 
     while current_start < end_time_ms and attempts < 20:
         current_end = min(current_start + max_klines * interval_ms, end_time_ms)
@@ -365,17 +380,46 @@ def _fetch_klines_data(
             "limit": max_klines,
         }
 
-        try:
-            response = requests.get(KLINE_ENDPOINT, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-        except Exception as exc:
-            raise RuntimeError(f"Failed to fetch klines for {symbol}: {exc}") from exc
+        last_error: Optional[Exception] = None
+        data = None
+        for url in endpoint_candidates:
+            try:
+                response = requests.get(url, params=params, timeout=10)
+            except requests.RequestException as exc:
+                last_error = exc
+                continue
 
-        if not data.get("success", False):
-            raise RuntimeError(f"API error while fetching klines for {symbol}: {data.get('error', 'unknown error')}")
+            if response.status_code == 404:
+                last_error = RuntimeError(f"404 from {url}")
+                continue
 
-        batch = data.get("data", [])
+            try:
+                response.raise_for_status()
+                data = response.json()
+                break
+            except Exception as exc:  # pragma: no cover - defensive for bad JSON
+                last_error = exc
+                continue
+
+        if data is None:
+            error_msg = (
+                f"Failed to fetch klines for {symbol}: {last_error}"
+                if last_error
+                else f"Failed to fetch klines for {symbol}: no response"
+            )
+            raise RuntimeError(error_msg)
+
+        if isinstance(data, dict) and data.get("success") is False:
+            raise RuntimeError(
+                f"API error while fetching klines for {symbol}: {data.get('error', 'unknown error')}"
+            )
+
+        if isinstance(data, dict):
+            batch = data.get("data") or data.get("result") or data.get("klines") or []
+        elif isinstance(data, list):
+            batch = data
+        else:
+            batch = []
         if not batch:
             break
 
@@ -422,7 +466,7 @@ def load_prices_from_api(
     interval: str = "5m"
 ) -> Tuple[List[float], List[float], dict]:
     """
-    Load BTC and ETH prices directly from Pacifica kline API.
+    Load BTC and ETH prices directly from Extended kline API.
 
     Args:
         symbol_btc: BTC symbol (e.g., 'BTC')
@@ -636,7 +680,7 @@ def calculate_hedge_ratio_auto(
         method: "ewma", "rolling_ols", or "vol_ratio"
         fallback_h: Fallback if all methods fail
         verbose: Print detailed info
-        use_api: When True (default) and data_dir is None, fetch data from Pacifica API
+        use_api: When True (default) and data_dir is None, fetch data from Extended API
         symbol_btc: BTC symbol to fetch
         symbol_eth: ETH symbol to fetch
         interval: Kline interval to request when using API
