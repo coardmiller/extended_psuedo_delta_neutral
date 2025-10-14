@@ -150,7 +150,18 @@ class ExtendedClient:
         """Load market information for BTC-PERP and ETH-PERP."""
 
         try:
-            result = self._request("GET", "/public/v1/markets")
+            result = self._request_with_path_fallbacks(
+                "GET",
+                "/public/v1/markets",
+                path_options=(
+                    "/markets",
+                    "/public/markets",
+                    "/v1/markets",
+                    "/api/public/v1/markets",
+                    "/exchange/public/v1/markets",
+                    "/api/exchange/public/v1/markets",
+                ),
+            )
             markets = result.get("data") or result.get("result") or []
 
             for market in markets:
@@ -311,7 +322,18 @@ class ExtendedClient:
     def get_mark_price(self, symbol: str) -> float:
         formatted = self._format_symbol(symbol)
         try:
-            payload = self._request("GET", "/public/v1/mark-price", params={"symbol": formatted})
+            payload = self._request_with_path_fallbacks(
+                "GET",
+                "/public/v1/mark-price",
+                params={"symbol": formatted},
+                path_options=(
+                    "/public/mark-price",
+                    "/mark-price",
+                    "/public/v1/markPrice",
+                    "/markPrice",
+                    "/api/public/v1/mark-price",
+                ),
+            )
             data = payload.get("data") or payload
             if isinstance(data, dict):
                 price_fields = ("mark", "markPrice", "price")
