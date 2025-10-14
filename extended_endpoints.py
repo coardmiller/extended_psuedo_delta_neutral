@@ -6,8 +6,16 @@ import os
 from typing import Iterable, Iterator, List, Optional
 
 _DEFAULT_REST_BASES: tuple[str, ...] = (
-    "https://api.extended.exchange",
+    # The public REST base documented at https://api.docs.extended.exchange
+    # resolves under the primary exchange domain. Include both the root and
+    # the `/api` prefix because the documentation inconsistently references
+    # each variant. We keep the legacy `api.extended.exchange` host as
+    # fallbacks so existing deployments keep working even if the DNS entry is
+    # retired.
+    "https://extended.exchange/api",
+    "https://extended.exchange",
     "https://api.extended.exchange/api",
+    "https://api.extended.exchange",
 )
 
 
