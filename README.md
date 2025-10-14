@@ -96,3 +96,26 @@ The project includes a suite of tests to verify the core logic. To run the tests
 ```bash
 python run_tests.py
 ```
+
+## 🔄 Avoiding Merge Conflicts
+
+Keeping your branch up to date with `main` is the easiest way to prevent repeat conflict resolution. A lightweight workflow that
+works well with this repository is:
+
+1. Fetch the latest changes before you start working:
+   ```bash
+   git fetch origin
+   ```
+2. Rebase your feature branch on top of the most recent `main` history (this keeps the commit graph linear and avoids repeated
+   merge commits):
+   ```bash
+   git rebase origin/main
+   ```
+3. If you have already pushed your branch, force-push the rebased history once the rebase completes:
+   ```bash
+   git push --force-with-lease
+   ```
+
+Doing this at the start of each work session—and again right before opening a pull request—ensures you only need to reconcile
+each upstream change once. When collaborating with others, the `--force-with-lease` flag guarantees you do not overwrite their
+work while still keeping your branch conflict-free.

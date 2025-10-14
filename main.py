@@ -38,6 +38,7 @@ API_BASE_URL = "https://api.extended.exchange/api"
 MAX_KLINES_PER_REQUEST = 3000
 OVERLAP_KLINES = 10
 
+    from ewma_hedge_ratio import calculate_hedge_ratio_auto as _calc
 
 async def fetch_klines_batch(session, symbol, interval, start_time, end_time, batch_num):
     """
@@ -98,7 +99,7 @@ def get_klines(symbol, interval, limit=365):
     if interval not in interval_ms:
         raise ValueError(f"Invalid interval: {interval}")
 
-    interval_duration_ms = interval_ms[interval]
+    interval_duration_ms = INTERVAL_SECONDS[interval] * 1000
     end_time = int(time.time() * 1000)
     start_time = end_time - (limit * interval_duration_ms)
 
@@ -182,17 +183,18 @@ def get_klines(symbol, interval, limit=365):
     if not all_klines:
         return pd.DataFrame()
 
-    df = pd.DataFrame(all_klines)
-    df = df.rename(columns={'t': 'timestamp', 'c': 'close'})
-    df['close'] = pd.to_numeric(df['close'])
-    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df = df.drop_duplicates(subset=['timestamp'], keep='first')
-    df = df.sort_values('timestamp').reset_index(drop=True)
-    
+    df = df.rename(columns={"price": "close"})
+    df["datetime"] = df["timestamp"]
+    df = df.drop_duplicates(subset=["datetime"], keep="last")
+    df = df.sort_values("datetime").reset_index(drop=True)
+
     if len(df) > limit:
         df = df.tail(limit).reset_index(drop=True)
 
-    return df[['datetime', 'close']]
+    logger.info(
+        "Fetched %s %s klines for %s via %s", len(df), interval, symbol, source
+    )
+    return df[["datetime", "close"]]
 
 
 # Configure logging

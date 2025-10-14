@@ -395,7 +395,10 @@ class TestAutoCalculation:
             base = 60000 if symbol.upper().startswith("BTC") else 3000
             prices = base + np.linspace(0, 100, len(idx))
 
-            return pd.DataFrame({"timestamp": idx, "price": prices})
+            df = pd.DataFrame({"timestamp": idx, "price": prices})
+            df.attrs["source"] = "extended"
+            df.attrs["debug"] = {"mock": True}
+            return df
 
         monkeypatch.setattr("ewma_hedge_ratio._fetch_klines_data", fake_fetch)
 
@@ -411,7 +414,7 @@ class TestAutoCalculation:
         assert len(prices_btc) > 0
         assert len(prices_eth) > 0
         assert len(prices_btc) == len(prices_eth)
-        assert metadata.get("source") == "api"
+        assert metadata.get("source") == "extended"
         assert metadata.get("samples") == len(prices_btc)
 
     def test_window_filtering(self):
