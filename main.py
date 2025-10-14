@@ -1,5 +1,5 @@
 """
-BTC-ETH Hedged Long/Short Bot for Pacifica DEX
+BTC-ETH Hedged Long/Short Bot for Extended Exchange
 
 Minimal configuration, data-driven hedge ratio, periodic refresh,
 per-leg stop-loss protection.
@@ -25,7 +25,7 @@ init(autoreset=True)
 # Add parent to path for SDK imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pacifica_client import PacificaClient
+from extended_client import ExtendedClient
 import aiohttp
 import asyncio
 import pandas as pd
@@ -33,16 +33,16 @@ import numpy as np
 import scipy as sp
 
 
-API_BASE_URL = "https://api.pacifica.fi/api/v1"
+PUBLIC_API_BASE_URL = "https://api.extended.exchange/public/v1"
 MAX_KLINES_PER_REQUEST = 3000
 OVERLAP_KLINES = 10
 
 
 async def fetch_klines_batch(session, symbol, interval, start_time, end_time, batch_num):
     """
-    Fetch a single batch of klines from Pacifica API (async).
+    Fetch a single batch of klines from Extended API (async).
     """
-    url = f"{API_BASE_URL}/kline"
+    url = f"{PUBLIC_API_BASE_URL}/klines"
     params = {
         'symbol': symbol,
         'interval': interval,
@@ -55,11 +55,17 @@ async def fetch_klines_batch(session, symbol, interval, start_time, end_time, ba
             response.raise_for_status()
             data = await response.json()
 
-            if not data.get('success'):
+            if isinstance(data, dict) and data.get('success') is False:
                 error_msg = data.get('error', 'Unknown error')
                 raise Exception(f"API returned error: {error_msg}")
 
-            return (batch_num, data.get('data', []))
+            klines = []
+            if isinstance(data, dict):
+                klines = data.get('data') or data.get('result') or data.get('klines') or []
+            elif isinstance(data, list):
+                klines = data
+
+            return (batch_num, klines)
 
     except Exception as e:
         logger.error(f"  [Batch {batch_num}] ERROR: {e}")
@@ -68,7 +74,7 @@ async def fetch_klines_batch(session, symbol, interval, start_time, end_time, ba
 
 async def get_klines(symbol, interval, limit=365):
     """
-    Fetch klines from Pacifica API.
+    Fetch klines from Extended API.
     """
     interval_ms = {'1d': 24 * 60 * 60 * 1000}
     if interval not in interval_ms:
@@ -150,22 +156,22 @@ class HedgeBot:
         # Load environment
         load_dotenv(Path(__file__).parent / ".env")
 
-        sol_wallet = os.getenv("SOL_WALLET")
-        api_public = os.getenv("API_PUBLIC")
-        api_private = os.getenv("API_PRIVATE")
+        account_id = os.getenv("EXTENDED_ACCOUNT_ID")
+        api_key = os.getenv("EXTENDED_API_KEY")
+        api_secret = os.getenv("EXTENDED_API_SECRET")
 
-        if not all([sol_wallet, api_public, api_private]):
-            raise ValueError("Missing env vars: SOL_WALLET, API_PUBLIC, API_PRIVATE")
+        if not all([account_id, api_key, api_secret]):
+            raise ValueError("Missing env vars: EXTENDED_ACCOUNT_ID, EXTENDED_API_KEY, EXTENDED_API_SECRET")
 
         # Initialize client
-        self.client = PacificaClient(
-            sol_wallet,
-            api_public,
-            api_private,
+        self.client = ExtendedClient(
+            account_id,
+            api_key,
+            api_secret,
             slippage_bps=self.get_config("slippage_bps", 50),
             allow_fallback=False
         )
-        logger.info(f"{Fore.GREEN}Pacifica client initialized")
+        logger.info(f"{Fore.GREEN}Extended client initialized")
 
         # Cached hedge ratio
         self._cached_h: Optional[float] = None
