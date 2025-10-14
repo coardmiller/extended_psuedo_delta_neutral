@@ -1,21 +1,8 @@
-# 🤖 Pacifica BTC-ETH Hedge Bot
+# 🤖 Extended BTC-ETH Hedge Bot
 
-This is a trading bot for the Pacifica DEX that implements a pseudo delta-neutral (market-neutral) long/short strategy on BTC-PERP and ETH-PERP. It aims to generate returns from the basis between the two assets while remaining hedged against overall market movements.
+This is a trading bot for the [Extended Exchange](https://extended.exchange/) that implements a pseudo delta-neutral (market-neutral) long/short strategy on BTC-PERP and ETH-PERP. It aims to generate returns from the basis between the two assets while remaining hedged against overall market movements.
 
 The bot is data-driven, using historical price data to calculate a hedge ratio that determines the relative sizes of the long BTC and short ETH positions.
-
-If you would like to support this work, please use one of the following referral codes when registering on [Pacifica DEX](https://app.pacifica.fi/) (if one is already taken, try the other ones):
-
-- `BYVJRCM791XFCF5K`
-- `ENPVKJ1WAVYNV2Z0`
-- `6HR2WM4C0JQ7D39Q`
-- `411J9J7CYNFZN3SX`
-- `2K7D40A9H53M2TJT`
-- `S1G3A2063Q7410BV`
-- `XH2V3VY9CQ7535CX`
-- `EK8NXX12VDKJJWNK`
-- `6NBS6TT7Y1SV2P53`
-- `E5ZYTD2FVXJA123W`
 
 ## ✨ Features
 
@@ -35,8 +22,8 @@ If you would like to support this work, please use one of the following referral
 ### Prerequisites
 
 - Python 3.8+
-- An account on the Pacifica DEX: https://app.pacifica.fi/
-- API keys for your Pacifica account
+- An account on the Extended Exchange: https://extended.exchange/
+- API key credentials for your Extended account (account id, API key, API secret)
 
 ### Installation
 
@@ -53,11 +40,16 @@ If you would like to support this work, please use one of the following referral
 
 ### Configuration
 
-1.  **Create a `.env` file** in the root of the project and add your API keys and wallet address. You can copy the `.env.example` file to get started:
+1.  **Create a `.env` file** in the root of the project and add your Extended account id, API key, and API secret. You can copy the `.env.example` file to get started:
     ```bash
     cp .env.example .env
     ```
-    Then, edit the `.env` file with your credentials.
+    Then, edit the `.env` file with your credentials:
+    ```env
+    EXTENDED_ACCOUNT_ID=YOUR_ACCOUNT_ID
+    EXTENDED_API_KEY=YOUR_API_KEY
+    EXTENDED_API_SECRET=YOUR_API_SECRET
+    ```
 
 2.  **Edit the `config.json` file** to configure the bot's parameters:
     - `capital_pct`: The percentage of your account equity to use for the strategy.
