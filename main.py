@@ -34,9 +34,7 @@ import scipy as sp
 
 from extended_endpoints import iter_candidate_urls
 
-
-KLINE_PATH_OPTIONS = ("public/v1/klines", "public/v1/kline", "klines", "kline")
-KLINE_ENDPOINTS = tuple(iter_candidate_urls(KLINE_PATH_OPTIONS))
+API_BASE_URL = "https://api.extended.exchange/api"
 MAX_KLINES_PER_REQUEST = 3000
 OVERLAP_KLINES = 10
 
@@ -45,6 +43,7 @@ async def fetch_klines_batch(session, symbol, interval, start_time, end_time, ba
     """
     Fetch a single batch of klines from Extended API (async).
     """
+    url = f"{PUBLIC_API_BASE_URL}/klines"
     params = {
         'symbol': symbol,
         'interval': interval,
@@ -57,15 +56,17 @@ async def fetch_klines_batch(session, symbol, interval, start_time, end_time, ba
         logger.error("  [Batch %s] ERROR: No Extended API kline endpoints configured", batch_num)
         return (batch_num, [])
 
-    for url in KLINE_ENDPOINTS:
-        try:
-            async with session.get(url, params=params, timeout=30) as response:
-                if response.status == 404:
-                    last_error = Exception(f"404 from {url}")
-                    continue
+            if isinstance(data, dict) and data.get('success') is False:
+                error_msg = data.get('error', 'Unknown error')
+                raise Exception(f"API returned error: {error_msg}")
 
-                response.raise_for_status()
-                data = await response.json()
+            klines = []
+            if isinstance(data, dict):
+                klines = data.get('data') or data.get('result') or data.get('klines') or []
+            elif isinstance(data, list):
+                klines = data
+
+            return (batch_num, klines)
 
                 if isinstance(data, dict) and data.get('success') is False:
                     error_msg = data.get('error', 'Unknown error')

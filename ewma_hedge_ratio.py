@@ -16,10 +16,9 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Dict
 from math import log, exp, isfinite
 
-from extended_endpoints import iter_candidate_urls
 
-
-KLINE_PATH_OPTIONS = ("public/v1/klines", "public/v1/kline", "klines", "kline")
+API_BASE_URL = "https://api.extended.exchange/api"
+KLINE_ENDPOINT = f"{API_BASE_URL}/kline"
 _PRICE_CACHE: Dict[Tuple[str, str, int, str], Tuple[List[float], List[float], dict]] = {}
 
 # Thresholds used to detect suspiciously low variance/covariance
@@ -355,9 +354,6 @@ def _fetch_klines_data(
     klines: List[dict] = []
     current_start = start_time_ms
     attempts = 0
-    endpoint_candidates = list(iter_candidate_urls(KLINE_PATH_OPTIONS))
-    if not endpoint_candidates:
-        raise RuntimeError("No Extended API endpoints configured for klines")
 
     while current_start < end_time_ms and attempts < 20:
         current_end = min(current_start + max_klines * interval_ms, end_time_ms)
@@ -369,34 +365,12 @@ def _fetch_klines_data(
             "limit": max_klines,
         }
 
-        last_error: Optional[Exception] = None
-        data = None
-        for url in endpoint_candidates:
-            try:
-                response = requests.get(url, params=params, timeout=10)
-            except requests.RequestException as exc:
-                last_error = exc
-                continue
-
-            if response.status_code == 404:
-                last_error = RuntimeError(f"404 from {url}")
-                continue
-
-            try:
-                response.raise_for_status()
-                data = response.json()
-                break
-            except Exception as exc:  # pragma: no cover - defensive for bad JSON
-                last_error = exc
-                continue
-
-        if data is None:
-            error_msg = (
-                f"Failed to fetch klines for {symbol}: {last_error}"
-                if last_error
-                else f"Failed to fetch klines for {symbol}: no response"
-            )
-            raise RuntimeError(error_msg)
+        try:
+            response = requests.get(KLINE_ENDPOINT, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to fetch klines for {symbol}: {exc}") from exc
 
         if isinstance(data, dict) and data.get("success") is False:
             raise RuntimeError(
