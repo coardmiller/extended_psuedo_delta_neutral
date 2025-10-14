@@ -42,7 +42,7 @@ async def fetch_klines_batch(session, symbol, interval, start_time, end_time, ba
     """
     Fetch a single batch of klines from Extended API (async).
     """
-    url = f"{API_BASE_URL}/kline"
+    url = f"{PUBLIC_API_BASE_URL}/klines"
     params = {
         'symbol': symbol,
         'interval': interval,
@@ -55,11 +55,17 @@ async def fetch_klines_batch(session, symbol, interval, start_time, end_time, ba
             response.raise_for_status()
             data = await response.json()
 
-            if not data.get('success'):
+            if isinstance(data, dict) and data.get('success') is False:
                 error_msg = data.get('error', 'Unknown error')
                 raise Exception(f"API returned error: {error_msg}")
 
-            return (batch_num, data.get('data', []))
+            klines = []
+            if isinstance(data, dict):
+                klines = data.get('data') or data.get('result') or data.get('klines') or []
+            elif isinstance(data, list):
+                klines = data
+
+            return (batch_num, klines)
 
     except Exception as e:
         logger.error(f"  [Batch {batch_num}] ERROR: {e}")

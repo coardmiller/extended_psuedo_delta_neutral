@@ -372,10 +372,17 @@ def _fetch_klines_data(
         except Exception as exc:
             raise RuntimeError(f"Failed to fetch klines for {symbol}: {exc}") from exc
 
-        if not data.get("success", False):
-            raise RuntimeError(f"API error while fetching klines for {symbol}: {data.get('error', 'unknown error')}")
+        if isinstance(data, dict) and data.get("success") is False:
+            raise RuntimeError(
+                f"API error while fetching klines for {symbol}: {data.get('error', 'unknown error')}"
+            )
 
-        batch = data.get("data", [])
+        if isinstance(data, dict):
+            batch = data.get("data") or data.get("result") or data.get("klines") or []
+        elif isinstance(data, list):
+            batch = data
+        else:
+            batch = []
         if not batch:
             break
 

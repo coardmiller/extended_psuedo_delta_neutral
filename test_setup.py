@@ -50,7 +50,7 @@ def test_env():
     """Test .env exists and has required variables."""
     print("\n2. Testing .env...")
 
-    env_path = Path(__file__).parent.parent / ".env"
+    env_path = Path(__file__).resolve().parent / ".env"
 
     if not env_path.exists():
         print(f"   ❌ .env not found at {env_path}")
