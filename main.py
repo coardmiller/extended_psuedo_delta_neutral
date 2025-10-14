@@ -32,6 +32,7 @@ import pandas as pd
 import numpy as np
 import scipy as sp
 
+from extended_endpoints import iter_candidate_urls
 
 API_BASE_URL = "https://api.extended.exchange/api"
 MAX_KLINES_PER_REQUEST = 3000
@@ -50,10 +51,10 @@ async def fetch_klines_batch(session, symbol, interval, start_time, end_time, ba
         'end_time': end_time
     }
 
-    try:
-        async with session.get(url, params=params, timeout=30) as response:
-            response.raise_for_status()
-            data = await response.json()
+    last_error: Optional[Exception] = None
+    if not KLINE_ENDPOINTS:
+        logger.error("  [Batch %s] ERROR: No Extended API kline endpoints configured", batch_num)
+        return (batch_num, [])
 
             if isinstance(data, dict) and data.get('success') is False:
                 error_msg = data.get('error', 'Unknown error')
@@ -67,9 +68,24 @@ async def fetch_klines_batch(session, symbol, interval, start_time, end_time, ba
 
             return (batch_num, klines)
 
-    except Exception as e:
-        logger.error(f"  [Batch {batch_num}] ERROR: {e}")
-        return (batch_num, [])
+                if isinstance(data, dict) and data.get('success') is False:
+                    error_msg = data.get('error', 'Unknown error')
+                    raise Exception(f"API returned error: {error_msg}")
+
+                klines = []
+                if isinstance(data, dict):
+                    klines = data.get('data') or data.get('result') or data.get('klines') or []
+                elif isinstance(data, list):
+                    klines = data
+
+                return (batch_num, klines)
+
+        except Exception as e:  # pragma: no cover - defensive for network issues
+            last_error = e
+            continue
+
+    logger.error(f"  [Batch {batch_num}] ERROR: {last_error}")
+    return (batch_num, [])
 
 
 async def get_klines(symbol, interval, limit=365):
