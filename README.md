@@ -51,8 +51,6 @@ The bot is data-driven, using historical price data to calculate a hedge ratio t
     EXTENDED_API_SECRET=YOUR_API_SECRET
     ```
 
-- **Optional:** If your region requires a different API hostname you can set `EXTENDED_REST_BASE_URL` (or comma-separated `EXTENDED_REST_BASE_URLS`) in your `.env`. The bot will automatically try each base when making requests.
-
 2.  **Edit the `config.json` file** to configure the bot's parameters:
     - `capital_pct`: The percentage of your account equity to use for the strategy.
     - `leverage`: The leverage to use for your positions.

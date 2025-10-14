@@ -18,9 +18,9 @@ from urllib.parse import urlencode
 
 import requests
 
-from extended_endpoints import get_rest_base_urls, join_url
-
 logger = logging.getLogger(__name__)
+
+REST_URL = "https://api.extended.exchange/api"
 
 
 @dataclass
@@ -53,7 +53,6 @@ class ExtendedClient:
         self.allow_fallback = allow_fallback
         self.session = requests.Session()
         self.session.headers.update({"X-EXT-APIKEY": api_key})
-        self._rest_bases = get_rest_base_urls()
 
         self._market_info: Dict[str, _MarketPrecision] = {}
         self._load_market_info()
@@ -88,60 +87,24 @@ class ExtendedClient:
     ) -> Dict[str, Any]:
         """Perform an HTTP request to the Extended API."""
 
-        errors = []
-        bases = self._rest_bases or get_rest_base_urls()
-        normalized_path = path if path.startswith("/") else f"/{path}"
-
-        for base in bases:
-            url = join_url(base, normalized_path)
-            headers: Dict[str, str] = {}
-            if private:
-                timestamp, signature = self._sign(method, normalized_path, params, json_body)
-                headers.update(
-                    {
-                        "X-EXT-APIKEY": self.api_key,
-                        "X-EXT-TIMESTAMP": timestamp,
-                        "X-EXT-SIGNATURE": signature,
-                        "Content-Type": "application/json",
-                    }
-                )
-            try:
-                response = self.session.request(
-                    method,
-                    url,
-                    params=params,
-                    json=json_body,
-                    headers=headers,
-                    timeout=timeout,
-                )
-            except requests.RequestException as exc:
-                errors.append(f"{url}: {exc}")
-                continue
-
-            if response.status_code == 404:
-                errors.append(f"{url}: 404")
-                continue
-
-            try:
-                response.raise_for_status()
-            except requests.HTTPError as exc:
-                errors.append(f"{url}: {exc}")
-                continue
-
-            try:
-                payload = response.json()
-            except ValueError as exc:
-                errors.append(f"{url}: invalid JSON ({exc})")
-                continue
-
-            if isinstance(payload, dict) and payload.get("success") is False:
-                errors.append(f"{url}: {payload.get('error', 'Unknown API error')}")
-                continue
-
-            return payload
-
-        error_text = "; ".join(errors) if errors else "no endpoints available"
-        raise RuntimeError(f"Extended API request failed for {path}: {error_text}")
+        url = f"{REST_URL}{path}"
+        headers: Dict[str, str] = {}
+        if private:
+            timestamp, signature = self._sign(method, path, params, json_body)
+            headers.update(
+                {
+                    "X-EXT-APIKEY": self.api_key,
+                    "X-EXT-TIMESTAMP": timestamp,
+                    "X-EXT-SIGNATURE": signature,
+                    "Content-Type": "application/json",
+                }
+            )
+        response = self.session.request(method, url, params=params, json=json_body, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("success") is False:
+            raise ValueError(payload.get("error", "Unknown API error"))
+        return payload
 
     # ------------------------------------------------------------------
     # Market metadata
@@ -150,36 +113,7 @@ class ExtendedClient:
         """Load market information for BTC-PERP and ETH-PERP."""
 
         try:
-            result = None
-            market_paths = (
-                "public/v1/markets",
-                "public/v1/market-info",
-                "public/v1/products",
-                "public/markets",
-                "public/market-info",
-                "public/products",
-                "v1/public/markets",
-                "v1/public/market-info",
-                "v1/public/products",
-                "v1/markets",
-                "v1/market-info",
-                "v1/products",
-                "markets",
-                "market-info",
-                "products",
-            )
-            errors = []
-            for path in market_paths:
-                try:
-                    result = self._request("GET", path)
-                    break
-                except Exception as exc:
-                    errors.append(str(exc))
-                    continue
-
-            if result is None:
-                raise RuntimeError("; ".join(errors))
-
+            result = self._request("GET", "/public/v1/markets")
             markets = result.get("data") or result.get("result") or []
 
             for market in markets:
@@ -574,3 +508,5 @@ class ExtendedClient:
             logger.warning("Failed to cancel all orders: %s", exc)
             if not self.allow_fallback:
                 raise RuntimeError("Failed to cancel all orders") from exc
+
+*** End of File
