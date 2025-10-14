@@ -17,8 +17,8 @@ from typing import Optional, Tuple, List, Dict
 from math import log, exp, isfinite
 
 
-PUBLIC_API_BASE_URL = "https://api.extended.exchange/public/v1"
-KLINE_ENDPOINT = f"{PUBLIC_API_BASE_URL}/klines"
+API_BASE_URL = "https://api.extended.exchange/api"
+KLINE_ENDPOINT = f"{API_BASE_URL}/kline"
 _PRICE_CACHE: Dict[Tuple[str, str, int, str], Tuple[List[float], List[float], dict]] = {}
 
 # Thresholds used to detect suspiciously low variance/covariance

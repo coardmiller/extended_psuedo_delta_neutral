@@ -33,7 +33,7 @@ import numpy as np
 import scipy as sp
 
 
-PUBLIC_API_BASE_URL = "https://api.extended.exchange/public/v1"
+API_BASE_URL = "https://api.extended.exchange/api"
 MAX_KLINES_PER_REQUEST = 3000
 OVERLAP_KLINES = 10
 

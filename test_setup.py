@@ -153,7 +153,7 @@ def test_connection():
     try:
         import requests
 
-        rest_url = "https://api.extended.exchange"
+        rest_url = "https://api.extended.exchange/api"
         response = requests.get(f"{rest_url}/public/v1/markets", timeout=10)
         response.raise_for_status()
 

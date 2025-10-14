@@ -20,7 +20,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-REST_URL = "https://api.extended.exchange"
+REST_URL = "https://api.extended.exchange/api"
 
 
 @dataclass
