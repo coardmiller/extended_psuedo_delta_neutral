@@ -17,11 +17,11 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 import requests
+from requests import HTTPError, RequestException
+
+from extended_endpoints import get_rest_base_urls, join_url
 
 logger = logging.getLogger(__name__)
-
-REST_URL = "https://api.extended.exchange/api"
-
 
 @dataclass
 class _MarketPrecision:
@@ -54,13 +54,23 @@ class ExtendedClient:
         self.session = requests.Session()
         self.session.headers.update({"X-EXT-APIKEY": api_key})
 
+        self._rest_base_urls = get_rest_base_urls()
+        if not self._rest_base_urls:
+            raise RuntimeError("No REST base URLs configured for Extended API")
+
         self._market_info: Dict[str, _MarketPrecision] = {}
         self._load_market_info()
 
     # ------------------------------------------------------------------
     # HTTP utilities
     # ------------------------------------------------------------------
-    def _sign(self, method: str, path: str, params: Optional[Dict[str, Any]], body: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    def _sign(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]],
+        body: Optional[Dict[str, Any]],
+    ) -> Tuple[str, str]:
         """Create authentication headers as defined by Extended API."""
 
         timestamp = str(int(time.time() * 1000))
@@ -87,7 +97,6 @@ class ExtendedClient:
     ) -> Dict[str, Any]:
         """Perform an HTTP request to the Extended API."""
 
-        url = f"{REST_URL}{path}"
         headers: Dict[str, str] = {}
         if private:
             timestamp, signature = self._sign(method, path, params, json_body)
@@ -99,12 +108,40 @@ class ExtendedClient:
                     "Content-Type": "application/json",
                 }
             )
-        response = self.session.request(method, url, params=params, json=json_body, headers=headers, timeout=timeout)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, dict) and payload.get("success") is False:
-            raise ValueError(payload.get("error", "Unknown API error"))
-        return payload
+
+        last_exc: Optional[Exception] = None
+        for base_url in self._rest_base_urls:
+            url = join_url(base_url, path)
+            try:
+                response = self.session.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, dict) and payload.get("success") is False:
+                    raise ValueError(payload.get("error", "Unknown API error"))
+                # Promote the successful base to the front for future requests.
+                if base_url != self._rest_base_urls[0]:
+                    self._rest_base_urls.remove(base_url)
+                    self._rest_base_urls.insert(0, base_url)
+                return payload
+            except HTTPError as exc:
+                last_exc = exc
+                status = exc.response.status_code if exc.response is not None else None
+                if status not in {404, 405}:
+                    raise
+            except RequestException as exc:  # pragma: no cover - network failure path
+                last_exc = exc
+                continue
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Extended API request failed without exception")
 
     # ------------------------------------------------------------------
     # Market metadata
@@ -188,17 +225,27 @@ class ExtendedClient:
             return symbol
         return f"{symbol}-PERP"
 
+    def _market_defaults(self) -> _MarketPrecision:
+        return _MarketPrecision(
+            tick_size=0.1,
+            lot_size=0.001,
+            min_notional=10.0,
+            max_leverage=20,
+            tick_size_dec=Decimal("0.1"),
+            lot_size_dec=Decimal("0.001"),
+        )
+
     def get_tick_size(self, symbol: str) -> float:
-        return self._market_info.get(symbol, _MarketPrecision(0.1, 0.001, 10.0, 20, Decimal("0.1"), Decimal("0.001"))).tick_size
+        return self._market_info.get(symbol, self._market_defaults()).tick_size
 
     def get_lot_size(self, symbol: str) -> float:
-        return self._market_info.get(symbol, _MarketPrecision(0.1, 0.001, 10.0, 20, Decimal("0.1"), Decimal("0.001"))).lot_size
+        return self._market_info.get(symbol, self._market_defaults()).lot_size
 
     def get_min_notional(self, symbol: str) -> float:
-        return self._market_info.get(symbol, _MarketPrecision(0.1, 0.001, 10.0, 20, Decimal("0.1"), Decimal("0.001"))).min_notional
+        return self._market_info.get(symbol, self._market_defaults()).min_notional
 
     def get_max_leverage(self, symbol: str) -> int:
-        return self._market_info.get(symbol, _MarketPrecision(0.1, 0.001, 10.0, 20, Decimal("0.1"), Decimal("0.001"))).max_leverage
+        return self._market_info.get(symbol, self._market_defaults()).max_leverage
 
     def round_price(self, price: float, symbol: str, side: str = "bid") -> float:
         market = self._market_info.get(symbol)
@@ -509,4 +556,3 @@ class ExtendedClient:
             if not self.allow_fallback:
                 raise RuntimeError("Failed to cancel all orders") from exc
 
-*** End of File
