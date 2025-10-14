@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 
+from extended_endpoints import iter_candidate_urls
+
 
 def test_config():
     """Test config.json exists and is valid."""
@@ -50,7 +52,7 @@ def test_env():
     """Test .env exists and has required variables."""
     print("\n2. Testing .env...")
 
-    env_path = Path(__file__).parent.parent / ".env"
+    env_path = Path(__file__).resolve().parent / ".env"
 
     if not env_path.exists():
         print(f"   ❌ .env not found at {env_path}")
@@ -58,33 +60,33 @@ def test_env():
 
     load_dotenv(env_path)
 
-    sol_wallet = os.getenv("SOL_WALLET")
-    api_public = os.getenv("API_PUBLIC")
-    api_private = os.getenv("API_PRIVATE")
+    account_id = os.getenv("EXTENDED_ACCOUNT_ID")
+    api_key = os.getenv("EXTENDED_API_KEY")
+    api_secret = os.getenv("EXTENDED_API_SECRET")
 
-    if not sol_wallet:
-        print("   ❌ SOL_WALLET not set in .env")
+    if not account_id:
+        print("   ❌ EXTENDED_ACCOUNT_ID not set in .env")
         return False
 
-    if not api_public:
-        print("   ❌ API_PUBLIC not set in .env")
+    if not api_key:
+        print("   ❌ EXTENDED_API_KEY not set in .env")
         return False
 
-    if not api_private:
-        print("   ❌ API_PRIVATE not set in .env")
+    if not api_secret:
+        print("   ❌ EXTENDED_API_SECRET not set in .env")
         return False
 
     print("   ✅ .env valid")
-    print(f"      - SOL_WALLET: {sol_wallet[:8]}...")
-    print(f"      - API_PUBLIC: {api_public[:8]}...")
-    print(f"      - API_PRIVATE: {'*' * 10}")
+    print(f"      - EXTENDED_ACCOUNT_ID: {account_id[:8]}...")
+    print(f"      - EXTENDED_API_KEY: {api_key[:8]}...")
+    print(f"      - EXTENDED_API_SECRET: {'*' * 10}")
 
     return True
 
 
 def test_market_data():
-    """Test fetching recent klines from Pacifica API."""
-    print("\n3. Testing Pacifica market data (klines)...")
+    """Test fetching recent klines from Extended API."""
+    print("\n3. Testing Extended market data (klines)...")
 
     try:
         from ewma_hedge_ratio import load_prices_from_api
@@ -147,30 +149,50 @@ def test_dependencies():
 
 
 def test_connection():
-    """Test connection to Pacifica API."""
-    print("\n5. Testing Pacifica connection...")
+    """Test connection to Extended API."""
+    print("\n5. Testing Extended connection...")
 
     try:
         import requests
-        from pacifica_sdk.common.constants import REST_URL
 
-        # Add parent to path for SDK imports
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-
-        response = requests.get(f"{REST_URL}/markets", timeout=10)
-        response.raise_for_status()
-
-        markets = response.json()
-        btc_found = any(m.get("symbol") == "BTC-PERP" for m in markets)
-        eth_found = any(m.get("symbol") == "ETH-PERP" for m in markets)
-
-        if not btc_found or not eth_found:
-            print("   ❌ BTC-PERP or ETH-PERP not found on exchange")
+        candidate_urls = list(iter_candidate_urls(["public/v1/markets", "markets"]))
+        if not candidate_urls:
+            print("   ❌ No Extended API endpoints configured")
             return False
 
-        print("   ✅ Pacifica API accessible")
-        print(f"      - BTC-PERP: available")
-        print(f"      - ETH-PERP: available")
+        payload = None
+        errors = []
+        for url in candidate_urls:
+            try:
+                response = requests.get(url, timeout=10)
+                if response.status_code == 404:
+                    errors.append(f"{url} -> 404")
+                    continue
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except Exception as exc:
+                errors.append(f"{url} -> {exc}")
+                continue
+
+        if payload is None:
+            print(f"   ❌ Connection failed: {'; '.join(errors)}")
+            return False
+        markets = payload.get("data") or payload.get("result") or payload
+
+        btc_found = False
+        eth_found = False
+        if isinstance(markets, list):
+            btc_found = any("BTC" in str(m.get("symbol", "")).upper() for m in markets)
+            eth_found = any("ETH" in str(m.get("symbol", "")).upper() for m in markets)
+
+        if not btc_found or not eth_found:
+            print("   ❌ BTC or ETH markets not found on exchange")
+            return False
+
+        print("   ✅ Extended API accessible")
+        print(f"      - BTC markets detected: {btc_found}")
+        print(f"      - ETH markets detected: {eth_found}")
 
         return True
 
