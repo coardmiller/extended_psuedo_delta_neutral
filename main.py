@@ -6,8 +6,7 @@ delta-neutral exposure.  The bot focuses on being data-driven and
 resilient so it can be left running unattended:
 
 * 📈 Goes long BTC and shorts ETH using a minimum-variance hedge ratio
-  computed from the last 365 days of daily returns sourced from the
-  exchange directly with an open CCXT (Binance/OKX/Kraken) fallback.
+  computed from the last 365 days of daily returns.
 * 💾 Persists state (targets, hedge ratio, refresh schedule) in
   ``state/state.json`` so it can recover after a restart.
 * 🧠 On start-up it reconciles the saved state with actual exchange
