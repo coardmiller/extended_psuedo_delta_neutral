@@ -27,3 +27,4 @@ pandas-ta
 brotli
 numba
 requests
+ccxt
