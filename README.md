@@ -7,7 +7,7 @@ The bot is data-driven, using historical price data to calculate a hedge ratio t
 ## ✨ Features
 
 - **📈 Pseudo Delta-Neutral Strategy**: Goes long on BTC and short on ETH to hedge against directional market risk. While it aims to minimize directional risk, it's important to note that this is not a perfect delta-neutral hedge.
-- **📊 Data-Driven Hedge Ratio**: Automatically calculates a minimum-variance hedge ratio based on the last 365 days of daily returns to determine position sizes.
+- **📊 Data-Driven Hedge Ratio**: Automatically calculates a minimum-variance hedge ratio based on the last 365 days of daily returns to determine position sizes, sourcing candles from Extended first and falling back to open CCXT exchanges (Binance/OKX/Kraken).
 - **💾 State Management**: Saves the bot's state (open positions, hedge ratio, etc.) to a `state.json` file, allowing it to resume operations after a restart.
 - **🧠 Intelligent Reconciliation**: At startup, the bot checks if its saved state is consistent with the positions on the exchange and makes adjustments if necessary.
 - **🛡️ Stop-Loss Protection**: Includes a configurable stop-loss to protect against excessive losses on either leg of the pair.

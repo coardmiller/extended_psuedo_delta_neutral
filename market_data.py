@@ -86,6 +86,13 @@ _PACIFICA_DEFAULT_BASES: Tuple[str, ...] = (
 
 _MAX_KLINES_PER_REQUEST = 3000
 
+# Open-source spot exchanges powered by CCXT (https://github.com/ccxt/ccxt)
+_CCXT_DEFAULT_EXCHANGES: Tuple[str, ...] = (
+    "binance",
+    "okx",
+    "kraken",
+)
+
 
 def _parse_env_urls(*names: str) -> List[str]:
     """Parse comma-separated URL overrides from the environment."""
@@ -126,6 +133,33 @@ def _pacifica_headers() -> Dict[str, str]:
         header_name = os.getenv("PACIFICA_REST_API_KEY_HEADER", "X-API-KEY")
         headers[header_name] = api_key
     return headers
+
+
+def _iter_ccxt_exchanges() -> Iterator[str]:
+    """Yield configured CCXT exchange ids without duplicates."""
+    seen: set[str] = set()
+    raw = os.getenv("CCXT_SPOT_EXCHANGES", "")
+    for entry in raw.split(","):
+        cleaned = entry.strip().lower()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            yield cleaned
+    for exchange in _CCXT_DEFAULT_EXCHANGES:
+        if exchange not in seen:
+            seen.add(exchange)
+            yield exchange
+
+
+def _normalise_ccxt_symbol(symbol: str) -> str:
+    """Map Extended symbols to CCXT spot market pairs (defaulting to USDT)."""
+    candidate = symbol.upper().replace("-", "").replace("/", "")
+    if candidate.endswith("USDT") and len(candidate) > 4:
+        base = candidate[:-4]
+    elif candidate in {"BTC", "ETH"}:
+        base = candidate
+    else:
+        base = candidate
+    return f"{base}/USDT"
 
 
 def _extract_timestamp(entry: object) -> Optional[int]:
@@ -409,6 +443,96 @@ def _fetch_pacifica_klines(
     return klines, errors
 
 
+def _fetch_ccxt_klines(
+    symbol: str,
+    interval: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    limit: Optional[int] = None,
+) -> Tuple[List[object], str, List[str]]:
+    """Fetch klines from open CCXT exchanges such as Binance or OKX."""
+    try:
+        import ccxt  # type: ignore
+    except ImportError:
+        return [], "unavailable", ["ccxt library not installed"]
+
+    interval_seconds = INTERVAL_SECONDS.get(interval)
+    if interval_seconds is None:
+        raise ValueError(f"Unsupported interval '{interval}'. Supported: {list(INTERVAL_SECONDS)}")
+
+    interval_ms = interval_seconds * 1000
+
+    pair = _normalise_ccxt_symbol(symbol)
+    max_per_request = 1000
+    ohlcvs: List[object] = []
+    errors: List[str] = []
+
+    for exchange_id in _iter_ccxt_exchanges():
+        exchange = getattr(ccxt, exchange_id, None)
+        if exchange is None:
+            errors.append(f"{exchange_id}: not available in ccxt")
+            continue
+
+        try:
+            client = exchange({"enableRateLimit": True})
+        except Exception as exc:  # pylint: disable=broad-except
+            errors.append(f"{exchange_id}: failed to initialise ({exc})")
+            continue
+
+        try:
+            since = start_ms
+            ohlcvs.clear()
+
+            while since < end_ms:
+                remaining = (limit - len(ohlcvs)) if limit is not None else None
+                if remaining is not None and remaining <= 0:
+                    break
+                batch_limit = min(
+                    max_per_request,
+                    remaining if remaining is not None else max_per_request,
+                )
+                batch_limit = max(1, batch_limit)
+                try:
+                    batch = client.fetch_ohlcv(  # type: ignore[call-arg]
+                        pair,
+                        timeframe=interval,
+                        since=since,
+                        limit=batch_limit,
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                    errors.append(f"{exchange_id}: {exc}")
+                    ohlcvs.clear()
+                    break
+
+                if not batch:
+                    break
+
+                ohlcvs.extend(batch)
+                last_timestamp = _extract_timestamp(batch[-1])
+                if last_timestamp is None:
+                    break
+                since = max(last_timestamp + interval_ms, since + interval_ms)
+
+                if limit is not None and len(ohlcvs) >= limit:
+                    break
+
+                if since >= end_ms:
+                    break
+
+            if ohlcvs:
+                return list(ohlcvs), exchange_id, errors
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
+    return [], "unavailable", errors
+
+
 def fetch_historical_klines(
     symbol: str,
     interval: str,
@@ -449,9 +573,30 @@ def fetch_historical_klines(
                 "pacifica_errors": _format_errors(pac_errors),
             }
 
+    logger.info(
+        "Pacifica kline lookup for %s %s returned no data (%s); trying CCXT fallback",
+        symbol,
+        interval,
+        _format_errors(pac_errors),
+    )
+
+    ccxt_data, ccxt_exchange, ccxt_errors = _fetch_ccxt_klines(
+        symbol, interval, start_ms, end_ms, limit=limit
+    )
+    if ccxt_data:
+        df = _klines_to_dataframe(ccxt_data)
+        if not df.empty:
+            return df, f"ccxt:{ccxt_exchange}", {
+                "extended_errors": _format_errors(ext_errors),
+                "pacifica_errors": _format_errors(pac_errors),
+                "ccxt_exchange": ccxt_exchange,
+                "ccxt_errors": _format_errors(ccxt_errors),
+            }
+
     error_info = {
         "extended_errors": _format_errors(ext_errors),
         "pacifica_errors": _format_errors(pac_errors),
+        "ccxt_errors": _format_errors(ccxt_errors),
     }
     return pd.DataFrame(), "unavailable", error_info
 
